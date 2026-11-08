@@ -1,0 +1,32 @@
+name: CI & Security Verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    name: macOS Swift 6 Build, Cryptographic & MCP Suite
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build MacOTP.app & run automated verification suite
+        run: make build
+
+      - name: Verify MCP JSON-RPC stdio handshake & tool discovery
+        run: |
+          OUTPUT=$(printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}' \
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+            | ./dist/MacOTP.app/Contents/MacOS/mac-otp-mcp)
+          echo "$OUTPUT" | grep -q '"name":"mac-otp-mcp"'
+          echo "$OUTPUT" | grep -q '"name":"get_2fa_code"'
+          echo "$OUTPUT" | grep -q '"name":"list_2fa_accounts"'

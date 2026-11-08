@@ -1,0 +1,8 @@
+.build/
+dist/
+.swiftpm/
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+*.macotpbackup
