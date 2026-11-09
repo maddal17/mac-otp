@@ -61,11 +61,9 @@ private struct EncryptedBackupEnvelope: Codable {
 
 public actor VaultStore {
     public static let maxPinAttempts = 5
-    private static let masterKeyAccount = "vault-master-key-v1"
-    private static let pinPepperAccount = "vault-pin-pepper-v1"
 
     public let baseDirectory: URL
-    private let keychain: KeychainStoreProtocol
+    private let keyProvider: MasterKeyProviderProtocol
     private var vaultData: PersistedVaultFile
     private var auditEntries: [AuditEntry]
 
@@ -75,12 +73,16 @@ public actor VaultStore {
 
     public init(
         baseDirectory: URL = VaultStore.defaultDirectory,
-        keychain: KeychainStoreProtocol = SystemKeychainStore()
+        keyProvider: MasterKeyProviderProtocol? = nil
     ) throws {
         self.baseDirectory = baseDirectory
-        self.keychain = keychain
-
         try Self.ensureSecureDirectory(baseDirectory)
+
+        if let keyProvider {
+            self.keyProvider = keyProvider
+        } else {
+            self.keyProvider = try EnclaveMasterKeyProvider(baseDirectory: baseDirectory)
+        }
 
         let vaultURL = baseDirectory.appendingPathComponent("vault.json")
         if FileManager.default.fileExists(atPath: vaultURL.path) {
@@ -105,9 +107,10 @@ public actor VaultStore {
         } else {
             self.auditEntries = []
         }
+    }
 
-        // Ensure master key exists in Keychain on first startup
-        _ = try Self.loadOrCreateMasterKey(keychain: keychain)
+    public func getKeyBackend() -> KeyProtectionBackend {
+        keyProvider.backend
     }
 
     // MARK: - Metadata & Settings (No Secret Decryption)
@@ -141,7 +144,6 @@ public actor VaultStore {
             return .matched(exact)
         }
 
-        // Exact case-insensitive match on displayTitle, issuer, or accountName
         let exactTitle = vaultData.accounts.filter {
             $0.displayTitle.caseInsensitiveCompare(trimmed) == .orderedSame
         }
@@ -159,7 +161,6 @@ public actor VaultStore {
         if exactAccount.count == 1 { return .matched(exactAccount[0]) }
         if exactAccount.count > 1 { return .ambiguous(exactAccount) }
 
-        // Substring match
         let substringMatches = vaultData.accounts.filter {
             $0.displayTitle.localizedCaseInsensitiveContains(trimmed) ||
             $0.issuer.localizedCaseInsensitiveContains(trimmed) ||
@@ -189,7 +190,7 @@ public actor VaultStore {
     @discardableResult
     public func addAccount(_ draft: OTPAccountDraft) throws -> OTPAccountMetadata {
         let secretBytes = try Base32.decode(draft.secretBase32)
-        let masterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
+        let masterKey = try keyProvider.loadOrCreateMasterKey()
 
         let metadata = OTPAccountMetadata(
             issuer: draft.issuer,
@@ -234,14 +235,14 @@ public actor VaultStore {
         try saveVaultToDisk()
     }
 
-    /// Generates a TOTP code for a single account using Keychain master key (caller MUST verify auth first!).
+    /// Generates a TOTP code for a single account (caller MUST verify user presence first).
     public func generateCode(accountId: UUID, at date: Date = Date()) throws -> GeneratedOTPCode {
         guard let meta = vaultData.accounts.first(where: { $0.id == accountId }),
               let ciphertext = vaultData.encryptedSecrets[accountId.uuidString] else {
             throw VaultStoreError.accountNotFound(accountId.uuidString)
         }
 
-        let masterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
+        let masterKey = try keyProvider.loadOrCreateMasterKey()
         let secret = try VaultCrypto.openSecret(ciphertext, masterKeyData: masterKey, accountId: accountId)
         return try TOTPEngine.generate(
             secret: secret,
@@ -256,7 +257,7 @@ public actor VaultStore {
     /// Generates TOTP codes for all accounts when the UI popover is actively unlocked.
     public func generateAllCodes(at date: Date = Date()) throws -> [UUID: GeneratedOTPCode] {
         guard !vaultData.accounts.isEmpty else { return [:] }
-        let masterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
+        let masterKey = try keyProvider.loadOrCreateMasterKey()
         var result: [UUID: GeneratedOTPCode] = [:]
         for meta in vaultData.accounts {
             guard let ciphertext = vaultData.encryptedSecrets[meta.id.uuidString] else { continue }
@@ -274,7 +275,7 @@ public actor VaultStore {
         return result
     }
 
-    // MARK: - Quick PIN Management (Optional Clamshell Ergonomics)
+    // MARK: - Quick PIN Management (Hardware SEP Pepper + PBKDF2, Zero Keychain)
 
     public func isQuickPinConfigured() -> Bool {
         FileManager.default.fileExists(atPath: pinWrapURL.path)
@@ -286,9 +287,8 @@ public actor VaultStore {
             throw VaultStoreError.quickPinTooShort
         }
 
-        let masterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
-        let pepper = try VaultCrypto.generateRandomBytes(count: 32)
-        try keychain.saveData(pepper, account: Self.pinPepperAccount)
+        let masterKey = try keyProvider.loadOrCreateMasterKey()
+        let pepper = try keyProvider.rotatePinPepper()
 
         let salt = try VaultCrypto.generateRandomBytes(count: 16)
         let derivedKey = try VaultCrypto.deriveKeyPBKDF2(
@@ -300,7 +300,7 @@ public actor VaultStore {
         let wrapped = try VaultCrypto.sealWithDerivedKey(
             plaintext: masterKey,
             derivedKey: derivedKey,
-            aad: Data("MACOTP_PIN_WRAP_V1".utf8)
+            aad: Data("MACOTP_PIN_WRAP_V2".utf8)
         )
 
         let wrapFile = PersistedPinWrapFile(
@@ -316,10 +316,9 @@ public actor VaultStore {
         if FileManager.default.fileExists(atPath: pinWrapURL.path) {
             try FileManager.default.removeItem(at: pinWrapURL)
         }
-        try keychain.deleteData(account: Self.pinPepperAccount)
+        try keyProvider.clearPinPepper()
     }
 
-    /// Cryptographically verifies the Quick PIN by unwrapping the Vault Master Key and checking equality.
     public func verifyQuickPin(_ pin: String) throws {
         guard FileManager.default.fileExists(atPath: pinWrapURL.path) else {
             throw VaultStoreError.quickPinNotConfigured
@@ -333,7 +332,7 @@ public actor VaultStore {
             throw VaultStoreError.quickPinLockedOut
         }
 
-        guard let pepper = try keychain.readData(account: Self.pinPepperAccount) else {
+        guard let pepper = try keyProvider.loadPinPepper() else {
             try? disableQuickPin()
             throw VaultStoreError.quickPinNotConfigured
         }
@@ -349,9 +348,9 @@ public actor VaultStore {
             let unwrapped = try VaultCrypto.openWithDerivedKey(
                 combinedCiphertext: wrapFile.wrappedMasterKey,
                 derivedKey: derived,
-                aad: Data("MACOTP_PIN_WRAP_V1".utf8)
+                aad: Data("MACOTP_PIN_WRAP_V2".utf8)
             )
-            let expectedMasterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
+            let expectedMasterKey = try keyProvider.loadOrCreateMasterKey()
             guard unwrapped == expectedMasterKey else {
                 throw VaultCryptoError.invalidPasswordOrCorruptedData
             }
@@ -380,7 +379,7 @@ public actor VaultStore {
             throw VaultStoreError.invalidBackupPasswordOrFormat
         }
 
-        let masterKey = try Self.loadOrCreateMasterKey(keychain: keychain)
+        let masterKey = try keyProvider.loadOrCreateMasterKey()
         var drafts: [OTPAccountDraft] = []
         for meta in vaultData.accounts {
             guard let ciphertext = vaultData.encryptedSecrets[meta.id.uuidString] else { continue }
@@ -493,15 +492,6 @@ public actor VaultStore {
     private func saveVaultToDisk() throws {
         let vaultURL = baseDirectory.appendingPathComponent("vault.json")
         try Self.writeSecureJSON(vaultData, to: vaultURL)
-    }
-
-    private static func loadOrCreateMasterKey(keychain: KeychainStoreProtocol) throws -> Data {
-        if let existing = try keychain.readData(account: masterKeyAccount), existing.count == 32 {
-            return existing
-        }
-        let generated = try VaultCrypto.generateRandomBytes(count: 32)
-        try keychain.saveData(generated, account: masterKeyAccount)
-        return generated
     }
 
     public static func ensureSecureDirectory(_ url: URL) throws {

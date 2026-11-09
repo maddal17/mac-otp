@@ -13,6 +13,7 @@ final class AppViewModel: ObservableObject {
     @Published var searchQuery: String = ""
     @Published var settings: SecuritySettings = SecuritySettings()
     @Published var isQuickPinSet: Bool = false
+    @Published var keyBackendLabel: String = ""
     @Published var auditEntries: [AuditEntry] = []
     @Published var toastMessage: String?
     @Published var errorBanner: String?
@@ -142,6 +143,7 @@ final class AppViewModel: ObservableObject {
         accounts = await vault.listAccounts()
         settings = await vault.getSettings()
         isQuickPinSet = await vault.isQuickPinConfigured()
+        keyBackendLabel = (await vault.getKeyBackend()).rawValue
         auditEntries = await vault.getAuditEntries()
         await syncLockAndCodes()
     }

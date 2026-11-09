@@ -2,6 +2,7 @@ import Foundation
 import MacOTPCore
 import AppKit
 import CoreImage
+import CryptoKit
 
 private struct TestFailure: Error, CustomStringConvertible {
     let description: String
@@ -97,7 +98,7 @@ struct VerificationSuite {
                 .appendingPathComponent("motp-vault-\(UUID().uuidString.prefix(8))", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: tempDir) }
 
-            let store = try VaultStore(baseDirectory: tempDir, keychain: InMemoryKeychainStore())
+            let store = try VaultStore(baseDirectory: tempDir, keyProvider: InMemoryMasterKeyProvider())
             let added = try await store.addAccount(
                 OTPAccountDraft(issuer: "GitHub", accountName: "alice", secretBase32: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
             )
@@ -139,7 +140,7 @@ struct VerificationSuite {
             let tempDir2 = FileManager.default.temporaryDirectory
                 .appendingPathComponent("motp-vault2-\(UUID().uuidString.prefix(8))", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: tempDir2) }
-            let store2 = try VaultStore(baseDirectory: tempDir2, keychain: InMemoryKeychainStore())
+            let store2 = try VaultStore(baseDirectory: tempDir2, keyProvider: InMemoryMasterKeyProvider())
 
             var wrongPwdRejected = false
             do {
@@ -154,11 +155,41 @@ struct VerificationSuite {
             try expectEqual(imported[0].issuer, "GitHub")
         }
 
-        await run("5. Live Unix Socket IPC + MCP JSON-RPC + Ambiguity Guard + Rate Limiting + Denial Cooldown") {
+        await run("5. Zero-Keychain EnclaveMasterKeyProvider ECIES Seal & Cross-Instance Persistence") {
+            let tempDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("motp-sep-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: tempDir) }
+
+            let provider1 = try EnclaveMasterKeyProvider(baseDirectory: tempDir)
+            if SecureEnclave.isAvailable {
+                try expectEqual(provider1.backend, .hardwareSecureEnclave)
+            }
+
+            // Lazy check: no key file created until first secret operation
+            let keyFileURL = tempDir.appendingPathComponent("enclave_keys.json")
+            try expect(!FileManager.default.fileExists(atPath: keyFileURL.path), "Lazy init must not create key envelope prematurely")
+
+            let master1 = try provider1.loadOrCreateMasterKey()
+            try expectEqual(master1.count, 32)
+            try expect(FileManager.default.fileExists(atPath: keyFileURL.path), "Key envelope must exist after sealing")
+
+            // Simulate full process restart with a fresh provider instance
+            let provider2 = try EnclaveMasterKeyProvider(baseDirectory: tempDir)
+            let master2 = try provider2.loadOrCreateMasterKey()
+            try expectEqual(master1, master2, "Unwrapped ECIES master key must match across instances")
+
+            let pepper1 = try provider1.rotatePinPepper()
+            let pepper2 = try provider2.loadPinPepper()
+            try expectEqual(pepper1, pepper2, "Unwrapped ECIES PIN pepper must match across instances")
+            try provider2.clearPinPepper()
+            try expectEqual(try provider1.loadPinPepper(), nil)
+        }
+
+        await run("6. Live Unix Socket IPC + MCP JSON-RPC + Ambiguity Guard + Rate Limiting + Denial Cooldown") {
             let sockDir = URL(fileURLWithPath: "/tmp/motp-\(UUID().uuidString.prefix(8))", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: sockDir) }
 
-            let store = try VaultStore(baseDirectory: sockDir, keychain: InMemoryKeychainStore())
+            let store = try VaultStore(baseDirectory: sockDir, keyProvider: InMemoryMasterKeyProvider())
             _ = try await store.addAccount(
                 OTPAccountDraft(issuer: "GitHub", accountName: "work", secretBase32: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
             )
@@ -201,40 +232,33 @@ struct VerificationSuite {
 
             let mcp = MCPProtocolEngine(socketPath: sockPath, autoLaunchDaemon: false)
 
-            // initialize
             let initData = mcp.handleRawMessage(Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}"#.utf8))
             try expect(initData != nil, "initialize must return response")
             try expect(String(data: initData!, encoding: .utf8)!.contains("mac-otp-mcp"))
 
-            // notifications/initialized -> nil
             try expect(mcp.handleRawMessage(Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8)) == nil)
 
-            // list_2fa_accounts
             let listData = mcp.handleRawMessage(Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_2fa_accounts","arguments":{}}}"#.utf8))!
             let listStr = String(data: listData, encoding: .utf8)!
             try expect(listStr.contains("GitHub (work)"), "Should list GitHub")
             try expectEqual(await gate.getCount(), 0, "Listing accounts when allowed must not prompt Touch ID")
 
-            // Ambiguous query ("Google") fails cleanly BEFORE prompting Touch ID
             let ambigData = mcp.handleRawMessage(Data(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_2fa_code","arguments":{"account":"Google"}}}"#.utf8))!
             let ambigStr = String(data: ambigData, encoding: .utf8)!
             try expect(ambigStr.contains("\"isError\":true"), "Ambiguous account must return isError=true")
             try expectEqual(await gate.getCount(), 0, "Ambiguous query must not prompt Touch ID")
 
-            // Exact match ("GitHub") succeeds and prompts once
             let ghCall = Data(#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_2fa_code","arguments":{"account":"GitHub","wait_for_fresh_window":false}}}"#.utf8)
             let ghStr = String(data: mcp.handleRawMessage(ghCall)!, encoding: .utf8)!
             try expect(ghStr.contains("\"isError\":false"), "Valid code request should succeed")
             try expect(ghStr.contains("Code: "), "Response must include generated OTP code")
             try expectEqual(await gate.getCount(), 1)
 
-            // Test 3 consecutive user denials -> triggers cooldown
             await gate.setApprove(false)
             _ = mcp.handleRawMessage(ghCall)
             _ = mcp.handleRawMessage(ghCall)
             _ = mcp.handleRawMessage(ghCall)
 
-            // Next call hits cooldown without even prompting!
             let countBeforeCooldownCall = await gate.getCount()
             let cooldownStr = String(data: mcp.handleRawMessage(ghCall)!, encoding: .utf8)!
             try expect(cooldownStr.contains("блокировка MCP"), "3 denials must activate anti-fatigue cooldown")

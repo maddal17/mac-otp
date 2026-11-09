@@ -586,6 +586,22 @@ private struct SettingsTabView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 8) {
+                    Image(systemName: "cpu.fill")
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Изоляция ключей: \(viewModel.keyBackendLabel)")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("Zero-Keychain режим: общая связка ключей macOS не затрагивается")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.green.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
                 GroupBox("Сессия и политика MCP") {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("Таймер разблокировки UI:", selection: Binding(

@@ -54,10 +54,13 @@ Existing solutions force an uncomfortable trade-off:
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ Secret Storage Boundary                                                 │
+│ Secret Storage Boundary (Zero-Keychain Hardware Isolation)              │
 │  • ~/.macotp/vault.json (0600): AES-256-GCM per-account ciphertexts     │
 │    bound via AEAD AAD to each account UUID (prevents record swapping)   │
-│  • macOS Login Keychain: 256-bit Vault Master Key + PIN HMAC Pepper     │
+│  • ~/.macotp/enclave_keys.json (0600): 256-bit Vault Master Key +       │
+│    PIN Pepper sealed via ECIES (P-256 ECDH + HKDF-SHA256 + AES-GCM)     │
+│    to an Apple Silicon Secure Enclave (SEP) hardware key.               │
+│  • Zero SecItem* Keychain calls — never touches macOS Login Keychain.   │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -68,8 +71,8 @@ Existing solutions force an uncomfortable trade-off:
 | Failure Mode / OS Restraint | Architectural Mitigation |
 | :--- | :--- |
 | **Headless MCP subprocesses cannot spawn Touch ID** | `mac-otp-mcp` holds zero secrets and delegates over `~/.macotp/ipc.sock` to `MacOTP.app` running in the interactive Aqua session. If `MacOTP.app` is not running, the bridge cold-starts it (`open -g`) and awaits socket readiness. |
-| **Closed Clamshell Mode disables MacBook Touch ID** | Detects `LAContext` biometric unavailability at runtime; if an optional Quick PIN is configured, displays a centered floating authorization HUD (`PBKDF2-HMAC-SHA256`, 210k rounds + Keychain pepper, auto-wiped after 5 failed attempts) with one-click fallback to macOS System Password. |
-| **No paid Apple Developer certificate (`errSecMissingEntitlement -34018`)** | Works out-of-the-box with ad-hoc code signing (`codesign -s -`) by combining an `AES-256-GCM` AAD-bound local vault with a 256-bit master key in the macOS Keychain gated by `LocalAuthentication`. |
+| **Closed Clamshell Mode disables MacBook Touch ID** | Detects `LAContext` biometric unavailability at runtime; if an optional Quick PIN is configured, displays a centered floating authorization HUD (`PBKDF2-HMAC-SHA256`, 210k rounds + Secure Enclave hardware pepper, auto-wiped after 5 failed attempts) with one-click fallback to macOS System Password. |
+| **Zero macOS Keychain prompts & no paid Apple Developer ID** | Eliminates all `SecItem*` Keychain calls (no legacy `securityd` CDHash access popups across rebuilds or updates). Instead, wraps the 256-bit Vault Master Key via **ECIES** against a non-extractable **Apple Silicon Secure Enclave (`CryptoKit.SecureEnclave`)** P-256 hardware key (with automatic software P-256 fallback on CI VMs). |
 | **Prompt fatigue / runaway agent loops** | Ambiguous or missing account queries fail *before* prompting the user; concurrent calls serialize through a single-flight queue; sliding-window rate limits and a 30s cooldown after 3 consecutive denials block prompt spam. |
 | **Expiring TOTP codes failing mid-paste** | If $\le 4$ seconds remain in the current 30-second window when an MCP request is approved, the daemon automatically waits for the next window so the agent always receives a fresh code. |
 | **Stale unlocked sessions across sleep** | Subscribes to `NSWorkspace` sleep notifications and `com.apple.screenIsLocked` to purge decrypted state immediately on lid close or screen lock. |
