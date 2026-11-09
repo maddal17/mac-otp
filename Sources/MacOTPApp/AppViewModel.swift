@@ -22,7 +22,9 @@ final class AppViewModel: ObservableObject {
     let authCoordinator: NativeAuthCoordinator
     let authManager: AuthSessionManager
     private var ipcServer: UnixDomainSocketServer?
-    private var refreshTimer: Timer?
+    private var uiRefreshTimer: Timer?
+    private var sessionExpiryTimer: Timer?
+    private var isPopoverVisible: Bool = false
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
 
@@ -46,7 +48,6 @@ final class AppViewModel: ObservableObject {
 
         setupIPCServer()
         setupSleepAndScreenLockObservers()
-        startPeriodicRefresh()
 
         Task {
             await reloadAllState()
@@ -124,31 +125,84 @@ final class AppViewModel: ObservableObject {
         )
     }
 
-    private func startPeriodicRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                await self?.tickSecond()
+    func setPopoverVisible(_ visible: Bool) {
+        guard isPopoverVisible != visible else { return }
+        isPopoverVisible = visible
+        if visible {
+            Task {
+                await reloadAllState()
+            }
+        } else {
+            stopUIRefreshTimer()
+            if !liveCodes.isEmpty {
+                liveCodes.removeAll()
             }
         }
     }
 
+    private func updateTimers() {
+        // 1. Live 1s countdown timer ONLY runs when the Menu Bar popover is actually open AND unlocked
+        if isPopoverVisible && isUnlocked {
+            if uiRefreshTimer == nil {
+                let timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        await self?.syncLockAndCodes()
+                    }
+                }
+                timer.tolerance = 0.15
+                uiRefreshTimer = timer
+            }
+        } else {
+            stopUIRefreshTimer()
+        }
+
+        // 2. Single one-shot timer for session TTL expiration (zero background polling wakeups)
+        sessionExpiryTimer?.invalidate()
+        sessionExpiryTimer = nil
+        if isUnlocked && remainingUnlockSeconds > 0 {
+            let oneShot = Timer.scheduledTimer(
+                withTimeInterval: TimeInterval(remainingUnlockSeconds) + 0.1,
+                repeats: false
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.syncLockAndCodes()
+                }
+            }
+            oneShot.tolerance = 1.0
+            sessionExpiryTimer = oneShot
+        }
+    }
+
+    private func stopUIRefreshTimer() {
+        uiRefreshTimer?.invalidate()
+        uiRefreshTimer = nil
+    }
+
     func shutdown() {
-        refreshTimer?.invalidate()
+        stopUIRefreshTimer()
+        sessionExpiryTimer?.invalidate()
+        sessionExpiryTimer = nil
         ipcServer?.stop()
     }
 
     // MARK: - State Refresh
 
     func reloadAllState() async {
-        accounts = await vault.listAccounts()
-        settings = await vault.getSettings()
-        isQuickPinSet = await vault.isQuickPinConfigured()
-        keyBackendLabel = (await vault.getKeyBackend()).rawValue
-        auditEntries = await vault.getAuditEntries()
-        await syncLockAndCodes()
-    }
+        let fetchedAccounts = await vault.listAccounts()
+        if accounts != fetchedAccounts { accounts = fetchedAccounts }
 
-    private func tickSecond() async {
+        let fetchedSettings = await vault.getSettings()
+        if settings != fetchedSettings { settings = fetchedSettings }
+
+        let fetchedPin = await vault.isQuickPinConfigured()
+        if isQuickPinSet != fetchedPin { isQuickPinSet = fetchedPin }
+
+        let fetchedBackend = (await vault.getKeyBackend()).rawValue
+        if keyBackendLabel != fetchedBackend { keyBackendLabel = fetchedBackend }
+
+        let fetchedAudit = await vault.getAuditEntries()
+        if auditEntries != fetchedAudit { auditEntries = fetchedAudit }
+
         await syncLockAndCodes()
     }
 
@@ -157,11 +211,11 @@ final class AppViewModel: ObservableObject {
         let remaining = await authManager.remainingUnlockSeconds()
 
         let changed = (unlockedNow != isUnlocked)
-        isUnlocked = unlockedNow
-        remainingUnlockSeconds = remaining
+        if isUnlocked != unlockedNow { isUnlocked = unlockedNow }
+        if remainingUnlockSeconds != remaining { remainingUnlockSeconds = remaining }
 
-        if unlockedNow {
-            if let codes = try? await vault.generateAllCodes(at: Date()) {
+        if unlockedNow && isPopoverVisible {
+            if let codes = try? await vault.generateAllCodes(at: Date()), liveCodes != codes {
                 liveCodes = codes
             }
         } else {
@@ -170,9 +224,12 @@ final class AppViewModel: ObservableObject {
             }
         }
 
+        updateTimers()
+
         if changed {
             onLockStateChanged?(unlockedNow)
-            auditEntries = await vault.getAuditEntries()
+            let fetchedAudit = await vault.getAuditEntries()
+            if auditEntries != fetchedAudit { auditEntries = fetchedAudit }
         }
     }
 

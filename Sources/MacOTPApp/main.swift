@@ -4,7 +4,7 @@ import MacOTPCore
 import SwiftUI
 
 @MainActor
-final class MacOTPAppDelegate: NSObject, NSApplicationDelegate {
+final class MacOTPAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private let popover = NSPopover()
     private var viewModel: AppViewModel?
@@ -13,7 +13,6 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate {
         let socketPath = ProcessInfo.processInfo.environment["MACOTP_SOCKET_PATH"]
             ?? UnixDomainSocketServer.defaultSocketPath
 
-        // Prevent duplicate daemon instances
         if UnixDomainSocketClient.isDaemonAlive(socketPath: socketPath) {
             NSApp.terminate(nil)
             return
@@ -42,7 +41,7 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate {
             popover.behavior = .transient
             popover.animates = true
             popover.contentSize = NSSize(width: 390, height: 520)
-            popover.contentViewController = NSHostingController(rootView: MenuBarRootView(viewModel: vm))
+            popover.delegate = self
 
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             if let button = item.button {
@@ -74,10 +73,20 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPopover() {
-        guard let button = statusItem?.button else { return }
+        guard let button = statusItem?.button, let vm = viewModel else { return }
+        if popover.contentViewController == nil {
+            popover.contentViewController = NSHostingController(rootView: MenuBarRootView(viewModel: vm))
+        }
+        vm.setPopoverVisible(true)
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        viewModel?.setPopoverVisible(false)
+        // Release SwiftUI hosting tree & backing layers when closed to minimize idle RAM & zero background layout passes
+        popover.contentViewController = nil
     }
 
     private func updateStatusIcon(unlocked: Bool) {
@@ -89,7 +98,6 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate {
         button.toolTip = unlocked ? "MacOTP (Разблокировано)" : "MacOTP (Заблокировано)"
     }
 
-    /// Ensures Cmd+C / Cmd+V / Cmd+X / Cmd+A work inside all SwiftUI text fields in an accessory app.
     private func installStandardEditMenu() {
         let mainMenu = NSMenu()
 

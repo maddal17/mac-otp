@@ -133,7 +133,6 @@ private struct QuickPinHUDView: View {
     @State private var pin: String = ""
     @State private var errorMessage: String?
     @State private var isVerifying: Bool = false
-    @FocusState private var pinFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -160,13 +159,14 @@ private struct QuickPinHUDView: View {
                 Spacer()
             }
 
-            SecureField("Введите быстрый PIN", text: $pin)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
-                .focused($pinFocused)
-                .onSubmit {
-                    submitPin()
-                }
+            LocalMaskedField(
+                placeholder: "Введите быстрый PIN",
+                text: $pin,
+                autoFocus: true,
+                onSubmit: { submitPin() },
+                onCancel: { onDenied() }
+            )
+            .frame(height: 28)
 
             if let errorMessage {
                 Text(errorMessage)
@@ -204,11 +204,6 @@ private struct QuickPinHUDView: View {
         }
         .padding(20)
         .frame(width: 360)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                pinFocused = true
-            }
-        }
     }
 
     private func submitPin() {
@@ -226,7 +221,6 @@ private struct QuickPinHUDView: View {
                 pin = ""
                 errorMessage = error.localizedDescription
                 isVerifying = false
-                pinFocused = true
             }
         }
     }

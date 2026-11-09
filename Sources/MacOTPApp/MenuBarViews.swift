@@ -200,15 +200,16 @@ private struct AccountsTabView: View {
                     Image(systemName: "key.fill")
                         .foregroundStyle(.secondary)
                         .font(.caption)
-                    SecureField("Быстрый PIN + Enter", text: $inlinePin)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                        .font(.system(.caption, design: .monospaced))
-                        .onSubmit {
+                    LocalMaskedField(
+                        placeholder: "Быстрый PIN + Enter",
+                        text: $inlinePin,
+                        onSubmit: {
                             let entered = inlinePin
                             inlinePin = ""
                             Task { _ = await viewModel.unlockWithQuickPin(entered) }
                         }
+                    )
+                    .frame(height: 24)
                     Button("Открыть") {
                         let entered = inlinePin
                         inlinePin = ""
@@ -674,9 +675,11 @@ private struct SettingsTabView: View {
                             .foregroundStyle(.secondary)
 
                         HStack(spacing: 8) {
-                            SecureField("Новый PIN (4–12 симв.)", text: $newPin)
-                                .textFieldStyle(.roundedBorder)
-                                .controlSize(.small)
+                            LocalMaskedField(
+                                placeholder: "Новый PIN (4–12 симв.)",
+                                text: $newPin
+                            )
+                            .frame(height: 24)
 
                             Button(viewModel.isQuickPinSet ? "Сменить" : "Задать") {
                                 let pinToSet = newPin
@@ -720,9 +723,11 @@ private struct SettingsTabView: View {
 
                 GroupBox("Зашифрованный бэкап (AES-256-GCM)") {
                     VStack(alignment: .leading, spacing: 8) {
-                        SecureField("Мастер-пароль бэкапа (мин. 6 симв.)", text: $backupPassword)
-                            .textFieldStyle(.roundedBorder)
-                            .controlSize(.small)
+                        LocalMaskedField(
+                            placeholder: "Мастер-пароль бэкапа (мин. 6 симв.)",
+                            text: $backupPassword
+                        )
+                        .frame(height: 24)
 
                         HStack(spacing: 8) {
                             Button("Экспорт...") {
