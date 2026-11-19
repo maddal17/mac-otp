@@ -76,6 +76,8 @@ Existing solutions force an uncomfortable trade-off:
 | **Prompt fatigue / runaway agent loops** | Ambiguous or missing account queries fail *before* prompting the user; concurrent calls serialize through a single-flight queue; sliding-window rate limits and a 30s cooldown after 3 consecutive denials block prompt spam. |
 | **Expiring TOTP codes failing mid-paste** | If $\le 4$ seconds remain in the current 30-second window when an MCP request is approved, the daemon automatically waits for the next window so the agent always receives a fresh code. |
 | **Stale unlocked sessions across sleep** | Subscribes to `NSWorkspace` sleep notifications and `com.apple.screenIsLocked` to purge decrypted state immediately on lid close or screen lock. |
+| **Idle CPU & AutoFill helper process overhead** | Event-driven timer lifecycle (`0.0%` idle CPU, `0` background wakeups when closed; lazy SwiftUI view teardown on popover close) and custom masked PIN inputs that prevent macOS from spawning external `SafariPlatformSupport` AutoFill XPC helper processes. |
+| **macOS 26 / 27 Liquid Glass & Multi-Language UX** | Links against the native `macosx26.0` SDK when available (applying `.glass` / `.glassProminent` / `GlassEffectContainer` strictly to floating chrome while keeping content cards high-contrast) and auto-detects system locale across **English**, **Russian (`Русский`)**, **Uzbek (`Oʻzbekcha`)**, and **French (`Français`)**. |
 
 ---
 
@@ -90,26 +92,26 @@ cd mac-otp
 # Compile Swift 6 targets, bundle & sign dist/MacOTP.app, and run verification tests
 make build
 
-# Install to ~/Applications/MacOTP.app and launch
+# Install to /Applications/MacOTP.app (or ~/Applications/MacOTP.app) and launch
 make install
-open ~/Applications/MacOTP.app
+open /Applications/MacOTP.app
 ```
 
 ---
 
 ## Adding 2FA Accounts
 
-Click the **shield icon** in the macOS Menu Bar $\to$ **Добавить 2FA**:
+Click the **shield icon** in the macOS Menu Bar $\to$ click the **`+`** card inside the list:
 1. **Scan QR from Screen** — drag-select any QR code visible in your browser (screenshot is processed via Apple `Vision` and immediately deleted).
 2. **Import QR from Clipboard / Image File** — supports both standard `otpauth://totp/...` QR codes and **Google Authenticator batch export QR codes** (`otpauth-migration://offline?data=...`).
 3. **Manual Base32 Key / URI** — supports `SHA1`, `SHA256`, `SHA512`, `6` or `8` digits, and `30s` / `60s` periods.
-4. **Encrypted Backups** — export/import portable `.macotpbackup` archives (`PBKDF2-HMAC-SHA256` + `AES-256-GCM`) for machine migration.
+4. **Encrypted Backups** — export/import portable `.macotpbackup` archives (`PBKDF2-HMAC-SHA256` + `AES-256-GCM`) via **`⚙` $\to$ Settings & Security**.
 
 ---
 
 ## MCP Configuration
 
-You can copy the exact JSON snippet with one click inside `MacOTP` (**Защита и MCP $\to$ Скопировать JSON для mcp_config.json**), or add it manually:
+You can copy the exact JSON snippet with one click inside `MacOTP` (**`⚙` $\to$ Copy MCP Config**), or add it manually:
 
 - **Google Antigravity:** `~/.gemini/config/mcp_config.json`
 - **Claude Desktop:** `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -119,7 +121,7 @@ You can copy the exact JSON snippet with one click inside `MacOTP` (**Защит
 {
   "mcpServers": {
     "mac-otp": {
-      "command": "/Users/<your-username>/Applications/MacOTP.app/Contents/MacOS/mac-otp-mcp",
+      "command": "/Applications/MacOTP.app/Contents/MacOS/mac-otp-mcp",
       "args": []
     }
   }
