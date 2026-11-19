@@ -19,6 +19,10 @@ final class AppViewModel: ObservableObject {
     @Published var toastMessage: String?
     @Published var errorBanner: String?
 
+    var l10n: L10n {
+        L10n(settings.language)
+    }
+
     let vault: VaultStore
     let authCoordinator: NativeAuthCoordinator
     let authManager: AuthSessionManager
@@ -245,7 +249,7 @@ final class AppViewModel: ObservableObject {
     func unlockWithSystemAuth() async {
         errorBanner = nil
         do {
-            try await authManager.unlockUISession()
+            try await authManager.unlockUISession(reason: l10n.unlockVaultPrompt)
             await reloadAllState()
         } catch {
             errorBanner = error.localizedDescription
@@ -278,7 +282,7 @@ final class AppViewModel: ObservableObject {
         if !isUnlocked {
             do {
                 try await authManager.unlockUISession(
-                    reason: "Скопировать 2FA-код для «\(account.displayTitle)»"
+                    reason: l10n.copyCodePrompt(account.displayTitle)
                 )
                 await syncLockAndCodes()
             } catch {
@@ -296,13 +300,13 @@ final class AppViewModel: ObservableObject {
                 action: "copy_code",
                 target: account.displayTitle,
                 outcome: .granted,
-                detail: "Скопирован в буфер"
+                detail: "Clipboard"
             )
             auditEntries = await vault.getAuditEntries()
-            showToast("Код \(generated.formattedCode) скопирован")
+            showToast(l10n.codeCopiedToast(generated.formattedCode))
 
             if settings.uiSessionTTLSeconds == 0 {
-                await lockVault(reason: "Режим одноразовой разблокировки (0 сек.)")
+                await lockVault(reason: "One-time TTL (0s)")
             }
         } catch {
             errorBanner = error.localizedDescription
@@ -350,10 +354,10 @@ final class AppViewModel: ObservableObject {
                 action: "add_account",
                 target: created.displayTitle,
                 outcome: .info,
-                detail: "Ручное добавление"
+                detail: "Manual"
             )
             await reloadAllState()
-            showToast("Добавлен: \(created.displayTitle)")
+            showToast(l10n.addedToast(created.displayTitle))
             return true
         } catch {
             errorBanner = error.localizedDescription
@@ -369,12 +373,12 @@ final class AppViewModel: ObservableObject {
             await vault.recordAudit(
                 channel: .ui,
                 action: "import_uri",
-                target: "\(added.count) акк.",
+                target: "\(added.count)",
                 outcome: .info,
-                detail: "Импорт по URI / QR"
+                detail: "URI / QR"
             )
             await reloadAllState()
-            showToast(added.isEmpty ? "Аккаунты уже существуют" : "Импортировано аккаунтов: \(added.count)")
+            showToast(l10n.importedToast(added.count))
             return true
         } catch {
             errorBanner = error.localizedDescription
@@ -449,25 +453,25 @@ final class AppViewModel: ObservableObject {
             }
         }
         guard anyParsed else {
-            errorBanner = "Найденный QR-код не содержит данных 2FA (otpauth://)."
+            errorBanner = l10n.qrNoOTPDataError
             return false
         }
         await vault.recordAudit(
             channel: .ui,
             action: "import_qr",
-            target: "\(totalAdded) акк.",
+            target: "\(totalAdded)",
             outcome: .info,
-            detail: "Импорт из QR-кода"
+            detail: "QR"
         )
         await reloadAllState()
-        showToast(totalAdded == 0 ? "Аккаунт уже добавлен" : "Импортировано из QR: \(totalAdded)")
+        showToast(l10n.importedToast(totalAdded))
         return true
     }
 
     func deleteAccount(_ account: OTPAccountMetadata) async {
         errorBanner = nil
         let approved = await authCoordinator.evaluateSystemOwnerAuth(
-            reason: "Удалить 2FA-аккаунт «\(account.displayTitle)»"
+            reason: "\(l10n.deleteAccountAction) “\(account.displayTitle)”"
         )
         guard approved else { return }
 
@@ -479,10 +483,10 @@ final class AppViewModel: ObservableObject {
                 action: "delete_account",
                 target: account.displayTitle,
                 outcome: .info,
-                detail: "Удалено пользователем"
+                detail: "Deleted"
             )
             await reloadAllState()
-            showToast("Удалён: \(account.primaryLabel)")
+            showToast(l10n.deletedToast(account.primaryLabel))
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -494,7 +498,7 @@ final class AppViewModel: ObservableObject {
         do {
             try await vault.updateSettings(updated)
             settings = updated
-            showToast("Настройки сохранены")
+            showToast(L10n(updated.language).settingsSavedToast)
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -503,7 +507,7 @@ final class AppViewModel: ObservableObject {
     func setupQuickPin(_ newPin: String) async -> Bool {
         errorBanner = nil
         let approved = await authCoordinator.evaluateSystemOwnerAuth(
-            reason: "Установить быстрый PIN для разблокировки MacOTP"
+            reason: l10n.quickPinGroup
         )
         guard approved else { return false }
 
@@ -514,10 +518,10 @@ final class AppViewModel: ObservableObject {
                 action: "set_quick_pin",
                 target: "Security",
                 outcome: .info,
-                detail: "Быстрый PIN настроен"
+                detail: "Quick PIN enabled"
             )
             await reloadAllState()
-            showToast("Быстрый PIN установлен")
+            showToast(l10n.pinSetToast)
             return true
         } catch {
             errorBanner = error.localizedDescription
@@ -534,10 +538,10 @@ final class AppViewModel: ObservableObject {
                 action: "disable_quick_pin",
                 target: "Security",
                 outcome: .info,
-                detail: "Быстрый PIN отключён"
+                detail: "Quick PIN disabled"
             )
             await reloadAllState()
-            showToast("Быстрый PIN отключён")
+            showToast(l10n.pinDisabledToast)
         } catch {
             errorBanner = error.localizedDescription
         }
@@ -546,7 +550,7 @@ final class AppViewModel: ObservableObject {
     func exportBackupInteractive(password: String) async -> Bool {
         errorBanner = nil
         let approved = await authCoordinator.evaluateSystemOwnerAuth(
-            reason: "Экспортировать зашифрованную резервную копию MacOTP"
+            reason: l10n.backupGroup
         )
         guard approved else { return false }
 
@@ -556,7 +560,7 @@ final class AppViewModel: ObservableObject {
             let savePanel = NSSavePanel()
             savePanel.nameFieldStringValue = "macotp-backup.macotpbackup"
             savePanel.canCreateDirectories = true
-            savePanel.prompt = "Сохранить бэкап"
+            savePanel.prompt = l10n.exportButton
 
             guard savePanel.runModal() == .OK, let url = savePanel.url else {
                 return false
@@ -567,10 +571,10 @@ final class AppViewModel: ObservableObject {
                 action: "export_backup",
                 target: url.lastPathComponent,
                 outcome: .granted,
-                detail: "Зашифрованный экспорт AES-256-GCM"
+                detail: "AES-256-GCM"
             )
             await reloadAllState()
-            showToast("Резервная копия сохранена")
+            showToast(l10n.backupSavedToast)
             return true
         } catch {
             errorBanner = error.localizedDescription
@@ -585,7 +589,7 @@ final class AppViewModel: ObservableObject {
         openPanel.canChooseFiles = true
         openPanel.canChooseDirectories = false
         openPanel.allowsMultipleSelection = false
-        openPanel.prompt = "Импортировать бэкап"
+        openPanel.prompt = l10n.importButton
 
         guard openPanel.runModal() == .OK, let url = openPanel.url else {
             return false
@@ -597,12 +601,12 @@ final class AppViewModel: ObservableObject {
             await vault.recordAudit(
                 channel: .ui,
                 action: "import_backup",
-                target: "\(imported.count) акк.",
+                target: "\(imported.count)",
                 outcome: .info,
-                detail: "Восстановлено из резервной копии"
+                detail: "AES-256-GCM"
             )
             await reloadAllState()
-            showToast("Импортировано из бэкапа: \(imported.count)")
+            showToast(l10n.importedToast(imported.count))
             return true
         } catch {
             errorBanner = error.localizedDescription
@@ -634,7 +638,7 @@ final class AppViewModel: ObservableObject {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(snippet, forType: .string)
-        showToast("Конфиг MCP скопирован в буфер")
+        showToast(l10n.mcpCopiedToast)
     }
 
     func showToast(_ message: String) {

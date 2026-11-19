@@ -95,7 +95,8 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
         let img = NSImage(systemSymbolName: symbolName, accessibilityDescription: "MacOTP")
         img?.isTemplate = true
         button.image = img
-        button.toolTip = unlocked ? "MacOTP (Разблокировано)" : "MacOTP (Заблокировано)"
+        let l10n = viewModel?.l10n ?? L10n(.system)
+        button.toolTip = unlocked ? "MacOTP" : "MacOTP (\(l10n.locked))"
     }
 
     private func installStandardEditMenu() {

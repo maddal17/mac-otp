@@ -244,7 +244,7 @@ public actor AuthSessionManager {
         }
 
         if needsExplicitPrompt {
-            let promptReason = "Выдать 2FA-код для «\(account.displayTitle)» (запрос через MCP)"
+            let promptReason = L10n(settings.language).mcpCodePrompt(account.displayTitle)
             let approved = try await runSerializedChallenge(
                 AuthChallengeRequest(
                     channel: .mcp,

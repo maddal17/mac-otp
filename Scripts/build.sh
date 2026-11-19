@@ -9,8 +9,14 @@ DIST_APP="$ROOT_DIR/dist/MacOTP.app"
 
 SWIFTC="$(xcrun --find swiftc)"
 SDK_PATH="$(xcrun --show-sdk-path)"
+SDK_MAJOR="$(xcrun --show-sdk-version | cut -d. -f1)"
 ARCH="$(uname -m)"
-COMMON_FLAGS=(-O -whole-module-optimization -swift-version 6 -target "${ARCH}-apple-macosx14.0" -sdk "$SDK_PATH")
+if [ "${SDK_MAJOR:-14}" -ge 26 ] 2>/dev/null; then
+    TARGET_OS="26.0"
+else
+    TARGET_OS="14.0"
+fi
+COMMON_FLAGS=(-O -whole-module-optimization -swift-version 6 -target "${ARCH}-apple-macosx${TARGET_OS}" -sdk "$SDK_PATH")
 
 mkdir -p "$MODULES_DIR" "$BIN_DIR" "$ROOT_DIR/dist"
 

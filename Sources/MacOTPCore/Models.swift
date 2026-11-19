@@ -133,6 +133,8 @@ public struct SecuritySettings: Codable, Equatable, Sendable {
     public var autoLockOnSleepOrScreenLock: Bool
     /// Automatically clear copied OTP code from clipboard after 30 seconds.
     public var autoClearClipboard: Bool
+    /// Preferred UI language (.system follows macOS preferred locale across EN, RU, UZ, FR).
+    public var language: AppLanguage
 
     public init(
         uiSessionTTLSeconds: Int = 300,
@@ -141,7 +143,8 @@ public struct SecuritySettings: Codable, Equatable, Sendable {
         mcpMinRemainingSeconds: Int = 4,
         mcpMaxRequestsPerMinute: Int = 6,
         autoLockOnSleepOrScreenLock: Bool = true,
-        autoClearClipboard: Bool = true
+        autoClearClipboard: Bool = true,
+        language: AppLanguage = .system
     ) {
         self.uiSessionTTLSeconds = uiSessionTTLSeconds
         self.mcpAuthPolicy = mcpAuthPolicy
@@ -150,6 +153,19 @@ public struct SecuritySettings: Codable, Equatable, Sendable {
         self.mcpMaxRequestsPerMinute = mcpMaxRequestsPerMinute
         self.autoLockOnSleepOrScreenLock = autoLockOnSleepOrScreenLock
         self.autoClearClipboard = autoClearClipboard
+        self.language = language
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.uiSessionTTLSeconds = try c.decodeIfPresent(Int.self, forKey: .uiSessionTTLSeconds) ?? 300
+        self.mcpAuthPolicy = try c.decodeIfPresent(MCPAuthPolicy.self, forKey: .mcpAuthPolicy) ?? .alwaysAskPerRequest
+        self.allowMCPListWhenLocked = try c.decodeIfPresent(Bool.self, forKey: .allowMCPListWhenLocked) ?? true
+        self.mcpMinRemainingSeconds = try c.decodeIfPresent(Int.self, forKey: .mcpMinRemainingSeconds) ?? 4
+        self.mcpMaxRequestsPerMinute = try c.decodeIfPresent(Int.self, forKey: .mcpMaxRequestsPerMinute) ?? 6
+        self.autoLockOnSleepOrScreenLock = try c.decodeIfPresent(Bool.self, forKey: .autoLockOnSleepOrScreenLock) ?? true
+        self.autoClearClipboard = try c.decodeIfPresent(Bool.self, forKey: .autoClearClipboard) ?? true
+        self.language = try c.decodeIfPresent(AppLanguage.self, forKey: .language) ?? .system
     }
 }
 

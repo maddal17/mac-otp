@@ -16,12 +16,79 @@ private enum ActiveModalSheet: Identifiable {
     }
 }
 
+// MARK: - macOS 26 / 27 Liquid Glass Adaptive Modifiers
+
+private extension View {
+    @ViewBuilder
+    func liquidGlassCapsule(tint: Color? = nil, interactive: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            let base: Glass = interactive ? .regular.interactive() : .regular
+            let styled: Glass = tint != nil ? base.tint(tint) : base
+            self.glassEffect(styled, in: .capsule)
+        } else {
+            self.background(.ultraThinMaterial, in: Capsule())
+        }
+        #else
+        self.background(.ultraThinMaterial, in: Capsule())
+        #endif
+    }
+
+    @ViewBuilder
+    func liquidGlassButtonStyle(prominent: Bool = false) -> some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            if prominent {
+                self.buttonStyle(.glassProminent)
+            } else {
+                self.buttonStyle(.glass)
+            }
+        } else {
+            if prominent {
+                self.buttonStyle(.borderedProminent)
+            } else {
+                self.buttonStyle(.bordered)
+            }
+        }
+        #else
+        if prominent {
+            self.buttonStyle(.borderedProminent)
+        } else {
+            self.buttonStyle(.bordered)
+        }
+        #endif
+    }
+}
+
+private struct AdaptiveGlassContainer<Content: View>: View {
+    let spacing: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content()
+            }
+        } else {
+            content()
+        }
+        #else
+        content()
+        #endif
+    }
+}
+
+// MARK: - Root Popover View
+
 struct MenuBarRootView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var activeSheet: ActiveModalSheet?
     @State private var isEnteringPin: Bool = false
     @State private var inlinePin: String = ""
     @State private var pendingCopyAccount: OTPAccountMetadata?
+
+    private var l10n: L10n { viewModel.l10n }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,11 +113,12 @@ struct MenuBarRootView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Color.orange.opacity(0.12))
+                .background(Color.orange.opacity(0.14))
             }
 
             AccountsListView(
                 viewModel: viewModel,
+                l10n: l10n,
                 onAccountClicked: { account in
                     handleAccountClick(account)
                 },
@@ -70,11 +138,8 @@ struct MenuBarRootView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Color.green.opacity(0.12))
+                .background(Color.green.opacity(0.14))
             }
-
-            Divider()
-                .opacity(0.5)
 
             bottomActionBar
         }
@@ -90,23 +155,26 @@ struct MenuBarRootView: View {
             case .addAccount:
                 AddAccountSheetView(
                     viewModel: viewModel,
+                    l10n: l10n,
                     onClose: { activeSheet = nil }
                 )
             case .settings:
                 SettingsSheetView(
                     viewModel: viewModel,
+                    l10n: l10n,
                     onClose: { activeSheet = nil }
                 )
             case .audit:
                 AuditSheetView(
                     entries: viewModel.auditEntries,
+                    l10n: l10n,
                     onClose: { activeSheet = nil }
                 )
             }
         }
     }
 
-    // MARK: - Header
+    // MARK: - Liquid Glass Top Chrome Bar
 
     private var headerBar: some View {
         HStack(spacing: 8) {
@@ -115,17 +183,14 @@ struct MenuBarRootView: View {
                 .foregroundStyle(viewModel.isUnlocked ? .green : .secondary)
 
             Text("MacOTP")
-                .font(.system(size: 13, weight: .bold))
+                .font(.system(size: 13.5, weight: .bold, design: .rounded))
 
             Text(statusSubtitle)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10.5, weight: .semibold, design: viewModel.isUnlocked ? .monospaced : .default))
                 .foregroundStyle(viewModel.isUnlocked ? .green : .secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(
-                    Capsule()
-                        .fill(viewModel.isUnlocked ? Color.green.opacity(0.12) : Color.secondary.opacity(0.10))
-                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .liquidGlassCapsule(tint: viewModel.isUnlocked ? .green.opacity(0.25) : nil)
 
             Spacer()
 
@@ -133,19 +198,19 @@ struct MenuBarRootView: View {
                 Button {
                     activeSheet = .settings
                 } label: {
-                    Label("Настройки и защита...", systemImage: "slider.horizontal.3")
+                    Label(l10n.settingsAndSecurityMenu, systemImage: "slider.horizontal.3")
                 }
 
                 Button {
                     viewModel.copyMCPConfigSnippet()
                 } label: {
-                    Label("Скопировать конфиг MCP", systemImage: "cpu")
+                    Label(l10n.copyMCPConfigMenu, systemImage: "cpu")
                 }
 
                 Button {
                     activeSheet = .audit
                 } label: {
-                    Label("Журнал событий...", systemImage: "list.bullet.rectangle")
+                    Label(l10n.activityLogMenu, systemImage: "list.bullet.rectangle")
                 }
 
                 Divider()
@@ -154,21 +219,21 @@ struct MenuBarRootView: View {
                     viewModel.shutdown()
                     NSApp.terminate(nil)
                 } label: {
-                    Label("Выйти из MacOTP", systemImage: "power")
+                    Label(l10n.quitAppMenu, systemImage: "power")
                 }
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
+                    .frame(width: 26, height: 26)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("Настройки и дополнительно")
+            .help(l10n.settingsTooltip)
         }
         .padding(.horizontal, 14)
-        .padding(.top, 11)
+        .padding(.top, 12)
         .padding(.bottom, 6)
     }
 
@@ -178,100 +243,100 @@ struct MenuBarRootView: View {
             let secs = viewModel.remainingUnlockSeconds % 60
             return String(format: "%02d:%02d", mins, secs)
         }
-        return "Заблокировано"
+        return l10n.locked
     }
 
-    // MARK: - State-Changing Bottom Primary Bar
+    // MARK: - Liquid Glass Bottom Floating Action Bar
 
-    @ViewBuilder
     private var bottomActionBar: some View {
-        if viewModel.isUnlocked {
-            Button {
-                Task { await viewModel.lockVault() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.fill")
-                    Text("Заблокировать")
-                        .fontWeight(.medium)
+        AdaptiveGlassContainer(spacing: 8) {
+            if viewModel.isUnlocked {
+                Button {
+                    Task { await viewModel.lockVault() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lock.fill")
+                        Text(l10n.lockButton)
+                            .fontWeight(.medium)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
                 }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.regular)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-        } else if isEnteringPin {
-            HStack(spacing: 6) {
-                LocalMaskedField(
-                    placeholder: "Введите PIN + Enter",
-                    text: $inlinePin,
-                    autoFocus: true,
-                    onSubmit: { submitInlinePin() },
-                    onCancel: {
+                .liquidGlassButtonStyle(prominent: false)
+                .controlSize(.regular)
+            } else if isEnteringPin {
+                HStack(spacing: 6) {
+                    LocalMaskedField(
+                        placeholder: l10n.enterPinPlaceholder,
+                        text: $inlinePin,
+                        autoFocus: true,
+                        onSubmit: { submitInlinePin() },
+                        onCancel: {
+                            isEnteringPin = false
+                            inlinePin = ""
+                            pendingCopyAccount = nil
+                        }
+                    )
+                    .frame(height: 26)
+
+                    Button(l10n.openPinButton) {
+                        submitInlinePin()
+                    }
+                    .liquidGlassButtonStyle(prominent: true)
+                    .controlSize(.small)
+                    .disabled(inlinePin.isEmpty)
+
+                    Button {
+                        isEnteringPin = false
+                        inlinePin = ""
+                        let target = pendingCopyAccount
+                        pendingCopyAccount = nil
+                        Task {
+                            if let target {
+                                await viewModel.copyCode(for: target)
+                            } else {
+                                await viewModel.unlockWithSystemAuth()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "touchid")
+                            .font(.system(size: 13))
+                    }
+                    .liquidGlassButtonStyle(prominent: false)
+                    .controlSize(.small)
+                    .help(l10n.useSystemAuthTooltip)
+
+                    Button {
                         isEnteringPin = false
                         inlinePin = ""
                         pendingCopyAccount = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.secondary)
                     }
-                )
-                .frame(height: 26)
-
-                Button("Открыть") {
-                    submitInlinePin()
+                    .buttonStyle(.plain)
+                    .help(l10n.cancelButton)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(inlinePin.isEmpty)
-
+            } else {
                 Button {
-                    isEnteringPin = false
-                    inlinePin = ""
-                    let target = pendingCopyAccount
-                    pendingCopyAccount = nil
-                    Task {
-                        if let target {
-                            await viewModel.copyCode(for: target)
-                        } else {
-                            await viewModel.unlockWithSystemAuth()
-                        }
+                    triggerUnlockFlow(afterUnlockCopy: nil)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewModel.isTouchIDCurrentlyAvailable() ? "touchid" : "lock.open.fill")
+                        Text(l10n.unlockButton)
+                            .fontWeight(.semibold)
                     }
-                } label: {
-                    Image(systemName: "touchid")
-                        .font(.system(size: 13))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 2)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Использовать системный пароль / Touch ID")
-
-                Button {
-                    isEnteringPin = false
-                    inlinePin = ""
-                    pendingCopyAccount = nil
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Отмена")
+                .liquidGlassButtonStyle(prominent: true)
+                .controlSize(.regular)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-        } else {
-            Button {
-                triggerUnlockFlow(afterUnlockCopy: nil)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: viewModel.isTouchIDCurrentlyAvailable() ? "touchid" : "lock.open.fill")
-                    Text("Разблокировать")
-                        .fontWeight(.semibold)
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
         }
+        .padding(.horizontal, 14)
+        .padding(.top, 6)
+        .padding(.bottom, 12)
     }
 
     private func handleAccountClick(_ account: OTPAccountMetadata) {
@@ -316,10 +381,11 @@ struct MenuBarRootView: View {
     }
 }
 
-// MARK: - Accounts List with Integrated Plus Button
+// MARK: - Accounts Content Layer + Integrated Plus Pill
 
 private struct AccountsListView: View {
     @ObservedObject var viewModel: AppViewModel
+    let l10n: L10n
     let onAccountClicked: (OTPAccountMetadata) -> Void
     let onAddTapped: () -> Void
 
@@ -330,7 +396,7 @@ private struct AccountsListView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    TextField("Поиск...", text: $viewModel.searchQuery)
+                    TextField(l10n.searchPlaceholder, text: $viewModel.searchQuery)
                         .textFieldStyle(.plain)
                         .font(.system(size: 12))
                     if !viewModel.searchQuery.isEmpty {
@@ -344,20 +410,20 @@ private struct AccountsListView: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 6)
+                .liquidGlassCapsule()
                 .padding(.horizontal, 14)
             }
 
             ScrollView {
-                LazyVStack(spacing: 7) {
+                LazyVStack(spacing: 8) {
                     ForEach(viewModel.filteredAccounts) { account in
                         AccountRowCard(
                             account: account,
                             generated: viewModel.liveCodes[account.id],
                             isUnlocked: viewModel.isUnlocked,
+                            l10n: l10n,
                             onCopy: { onAccountClicked(account) },
                             onDelete: {
                                 Task { await viewModel.deleteAccount(account) }
@@ -365,43 +431,52 @@ private struct AccountsListView: View {
                         )
                     }
 
-                    // Clean inline '+' card directly inside the list
+                    // Concentric '+' action inside the list
                     Button(action: onAddTapped) {
                         HStack(spacing: 6) {
                             Image(systemName: "plus")
                                 .font(.system(size: 12, weight: .semibold))
                             if viewModel.accounts.isEmpty {
-                                Text("Добавить первый аккаунт")
+                                Text(l10n.addFirstAccount)
                                     .font(.system(size: 12, weight: .medium))
                             }
                         }
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 7)
                         .background(
-                            RoundedRectangle(cornerRadius: 9)
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .fill(Color.primary.opacity(0.03))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
                                 .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                                .foregroundStyle(Color.secondary.opacity(0.28))
+                                .foregroundStyle(Color.primary.opacity(0.16))
                         )
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Добавить новый аккаунт")
+                    .help(l10n.addAccountTooltip)
                 }
                 .padding(.horizontal, 14)
                 .padding(.top, 4)
-                .padding(.bottom, 10)
+                .padding(.bottom, 8)
             }
         }
     }
 }
 
+/// Content card following macOS 26/27 HIG: concentric continuous corners, non-glass translucent
+/// content surface for high contrast typography, and subtle specular highlight border.
 private struct AccountRowCard: View {
     let account: OTPAccountMetadata
     let generated: GeneratedOTPCode?
     let isUnlocked: Bool
+    let l10n: L10n
     let onCopy: () -> Void
     let onDelete: () -> Void
+
+    @State private var isHovered: Bool = false
 
     var body: some View {
         Button(action: onCopy) {
@@ -440,26 +515,31 @@ private struct AccountRowCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .padding(.horizontal, 13)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(Color.primary.opacity(isHovered ? 0.085 : 0.05))
+            )
             .overlay(
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(isHovered ? 0.16 : 0.09), lineWidth: 0.75)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isUnlocked ? "Скопировать код" : "Разблокировать и скопировать код")
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(isUnlocked ? l10n.copyCodeAction : l10n.unlockAndCopyTooltip)
         .contextMenu {
-            Button("Скопировать код") { onCopy() }
-            Button("Скопировать ID для MCP") {
+            Button(l10n.copyCodeAction) { onCopy() }
+            Button(l10n.copyMCPIdAction) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(account.id.uuidString, forType: .string)
             }
             Divider()
-            Button("Удалить аккаунт...", role: .destructive) { onDelete() }
+            Button(l10n.deleteAccountAction, role: .destructive) { onDelete() }
         }
     }
 }
@@ -492,6 +572,7 @@ private struct CountdownRing: View {
 
 private struct AddAccountSheetView: View {
     @ObservedObject var viewModel: AppViewModel
+    let l10n: L10n
     let onClose: () -> Void
 
     @State private var mode: Int = 0
@@ -505,12 +586,12 @@ private struct AddAccountSheetView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Новый аккаунт")
+            Text(l10n.newAccountTitle)
                 .font(.headline)
 
             Picker("", selection: $mode) {
-                Text("QR-код / Ссылка").tag(0)
-                Text("Вручную по ключу").tag(1)
+                Text(l10n.qrOrLinkTab).tag(0)
+                Text(l10n.manualKeyTab).tag(1)
             }
             .pickerStyle(.segmented)
 
@@ -524,7 +605,7 @@ private struct AddAccountSheetView: View {
                                 }
                             }
                         } label: {
-                            Label("С экрана", systemImage: "viewfinder")
+                            Label(l10n.scanScreenButton, systemImage: "viewfinder")
                         }
 
                         Button {
@@ -534,7 +615,7 @@ private struct AddAccountSheetView: View {
                                 }
                             }
                         } label: {
-                            Label("Из буфера", systemImage: "doc.on.clipboard")
+                            Label(l10n.scanClipboardButton, systemImage: "doc.on.clipboard")
                         }
 
                         Button {
@@ -544,7 +625,7 @@ private struct AddAccountSheetView: View {
                                 }
                             }
                         } label: {
-                            Label("Файл...", systemImage: "photo")
+                            Label(l10n.scanFileButton, systemImage: "photo")
                         }
                     }
                     .controlSize(.small)
@@ -555,22 +636,22 @@ private struct AddAccountSheetView: View {
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextField("Сервис (GitHub, VPN, AWS)", text: $issuer)
+                    TextField(l10n.servicePlaceholder, text: $issuer)
                         .textFieldStyle(.roundedBorder)
-                    TextField("Логин / Email", text: $accountName)
+                    TextField(l10n.loginPlaceholder, text: $accountName)
                         .textFieldStyle(.roundedBorder)
-                    TextField("Секретный ключ Base32", text: $secretBase32)
+                    TextField(l10n.secretKeyPlaceholder, text: $secretBase32)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.caption, design: .monospaced))
 
                     HStack(spacing: 8) {
-                        Picker("Цифр", selection: $digits) {
+                        Picker(l10n.digitsLabel, selection: $digits) {
                             Text("6").tag(6)
                             Text("8").tag(8)
                         }
-                        Picker("Шаг", selection: $period) {
-                            Text("30с").tag(30)
-                            Text("60с").tag(60)
+                        Picker(l10n.periodLabel, selection: $period) {
+                            Text("30s").tag(30)
+                            Text("60s").tag(60)
                         }
                         Picker("", selection: $algorithm) {
                             ForEach(OTPAlgorithm.allCases, id: \.self) { algo in
@@ -591,13 +672,13 @@ private struct AddAccountSheetView: View {
 
             HStack {
                 Spacer()
-                Button("Отмена") {
+                Button(l10n.cancelButton) {
                     viewModel.errorBanner = nil
                     onClose()
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Сохранить") {
+                Button(l10n.saveButton) {
                     Task {
                         if mode == 0 {
                             if await viewModel.importFromURI(uriText) {
@@ -617,20 +698,21 @@ private struct AddAccountSheetView: View {
                         }
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .liquidGlassButtonStyle(prominent: true)
                 .disabled(mode == 0 ? uriText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty : secretBase32.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
-        .frame(width: 320)
+        .frame(width: 325)
     }
 }
 
-// MARK: - Settings Modal Sheet (Opened via Gear Menu)
+// MARK: - Settings Modal Sheet
 
 private struct SettingsSheetView: View {
     @ObservedObject var viewModel: AppViewModel
+    let l10n: L10n
     let onClose: () -> Void
     @State private var newPin: String = ""
     @State private var backupPassword: String = ""
@@ -638,10 +720,10 @@ private struct SettingsSheetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Настройки и защита")
+                Text(l10n.settingsTitle)
                     .font(.headline)
                 Spacer()
-                Button("Готово") {
+                Button(l10n.doneButton) {
                     onClose()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -653,17 +735,31 @@ private struct SettingsSheetView: View {
                         Image(systemName: "cpu.fill")
                             .foregroundStyle(.green)
                             .font(.caption)
-                        Text("Ключи: \(viewModel.keyBackendLabel) (Zero-Keychain)")
+                        Text(l10n.hardwareKeysBadge(viewModel.keyBackendLabel))
                             .font(.system(size: 11, weight: .medium))
                     }
                     .padding(7)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.green.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
-                    GroupBox("Сессия и MCP") {
+                    GroupBox(l10n.sessionAndMCPGroup) {
                         VStack(alignment: .leading, spacing: 8) {
-                            Picker("Сессия UI:", selection: Binding(
+                            Picker(l10n.languageLabel, selection: Binding(
+                                get: { viewModel.settings.language },
+                                set: { val in
+                                    var s = viewModel.settings
+                                    s.language = val
+                                    Task { await viewModel.saveSettings(s) }
+                                }
+                            )) {
+                                ForEach(AppLanguage.allCases, id: \.self) { lang in
+                                    Text(lang.displayName).tag(lang)
+                                }
+                            }
+                            .controlSize(.small)
+
+                            Picker(l10n.uiSessionLabel, selection: Binding(
                                 get: { viewModel.settings.uiSessionTTLSeconds },
                                 set: { val in
                                     var s = viewModel.settings
@@ -671,14 +767,14 @@ private struct SettingsSheetView: View {
                                     Task { await viewModel.saveSettings(s) }
                                 }
                             )) {
-                                Text("Одноразово (0с)").tag(0)
-                                Text("1 мин").tag(60)
-                                Text("5 мин").tag(300)
-                                Text("15 мин").tag(900)
+                                Text(l10n.ttlOneTime).tag(0)
+                                Text(l10n.ttl1Min).tag(60)
+                                Text(l10n.ttl5Min).tag(300)
+                                Text(l10n.ttl15Min).tag(900)
                             }
                             .controlSize(.small)
 
-                            Picker("Режим MCP:", selection: Binding(
+                            Picker(l10n.mcpModeLabel, selection: Binding(
                                 get: { viewModel.settings.mcpAuthPolicy },
                                 set: { val in
                                     var s = viewModel.settings
@@ -686,12 +782,12 @@ private struct SettingsSheetView: View {
                                     Task { await viewModel.saveSettings(s) }
                                 }
                             )) {
-                                Text("Спрашивать каждый раз").tag(MCPAuthPolicy.alwaysAskPerRequest)
-                                Text("Общая сессия с UI").tag(MCPAuthPolicy.reuseActiveSession)
+                                Text(l10n.mcpAskEveryTime).tag(MCPAuthPolicy.alwaysAskPerRequest)
+                                Text(l10n.mcpShareSession).tag(MCPAuthPolicy.reuseActiveSession)
                             }
                             .controlSize(.small)
 
-                            Toggle("Блокировать при сне Mac", isOn: Binding(
+                            Toggle(l10n.lockOnSleepToggle, isOn: Binding(
                                 get: { viewModel.settings.autoLockOnSleepOrScreenLock },
                                 set: { val in
                                     var s = viewModel.settings
@@ -701,7 +797,7 @@ private struct SettingsSheetView: View {
                             ))
                             .font(.caption)
 
-                            Toggle("Очищать буфер через 30 сек", isOn: Binding(
+                            Toggle(l10n.clearClipboardToggle, isOn: Binding(
                                 get: { viewModel.settings.autoClearClipboard },
                                 set: { val in
                                     var s = viewModel.settings
@@ -714,15 +810,15 @@ private struct SettingsSheetView: View {
                         .padding(4)
                     }
 
-                    GroupBox("Быстрый PIN (при закрытой крышке)") {
+                    GroupBox(l10n.quickPinGroup) {
                         HStack(spacing: 6) {
                             LocalMaskedField(
-                                placeholder: viewModel.isQuickPinSet ? "Сменить PIN" : "Новый PIN (4–12)",
+                                placeholder: viewModel.isQuickPinSet ? l10n.changePinPlaceholder : l10n.newPinPlaceholder,
                                 text: $newPin
                             )
                             .frame(height: 24)
 
-                            Button(viewModel.isQuickPinSet ? "Обновить" : "Задать") {
+                            Button(viewModel.isQuickPinSet ? l10n.updateButton : l10n.setButton) {
                                 let pinToSet = newPin
                                 newPin = ""
                                 Task { _ = await viewModel.setupQuickPin(pinToSet) }
@@ -731,7 +827,7 @@ private struct SettingsSheetView: View {
                             .disabled(newPin.count < 4)
 
                             if viewModel.isQuickPinSet {
-                                Button("Сброс", role: .destructive) {
+                                Button(l10n.resetButton, role: .destructive) {
                                     Task { await viewModel.removeQuickPin() }
                                 }
                                 .controlSize(.small)
@@ -740,22 +836,22 @@ private struct SettingsSheetView: View {
                         .padding(4)
                     }
 
-                    GroupBox("Резервная копия (AES-256-GCM)") {
+                    GroupBox(l10n.backupGroup) {
                         HStack(spacing: 6) {
                             LocalMaskedField(
-                                placeholder: "Пароль (мин. 6 симв.)",
+                                placeholder: l10n.backupPasswordPlaceholder,
                                 text: $backupPassword
                             )
                             .frame(height: 24)
 
-                            Button("Экспорт") {
+                            Button(l10n.exportButton) {
                                 let pwd = backupPassword
                                 backupPassword = ""
                                 Task { _ = await viewModel.exportBackupInteractive(password: pwd) }
                             }
                             .disabled(backupPassword.count < 6)
 
-                            Button("Импорт") {
+                            Button(l10n.importButton) {
                                 let pwd = backupPassword
                                 backupPassword = ""
                                 Task { _ = await viewModel.importBackupInteractive(password: pwd) }
@@ -769,14 +865,15 @@ private struct SettingsSheetView: View {
             }
         }
         .padding(14)
-        .frame(width: 325, height: 295)
+        .frame(width: 330, height: 300)
     }
 }
 
-// MARK: - Audit Modal Sheet (Opened via Gear Menu)
+// MARK: - Activity Log Modal Sheet
 
 private struct AuditSheetView: View {
     let entries: [AuditEntry]
+    let l10n: L10n
     let onClose: () -> Void
 
     private static let formatter: DateFormatter = {
@@ -788,10 +885,10 @@ private struct AuditSheetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Журнал событий")
+                Text(l10n.activityLogTitle)
                     .font(.headline)
                 Spacer()
-                Button("Закрыть") {
+                Button(l10n.closeButton) {
                     onClose()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -799,7 +896,7 @@ private struct AuditSheetView: View {
 
             if entries.isEmpty {
                 Spacer()
-                Text("Событий пока нет")
+                Text(l10n.noActivityYet)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
@@ -830,8 +927,10 @@ private struct AuditSheetView: View {
                                 }
                             }
                             .padding(6)
-                            .background(Color(nsColor: .controlBackgroundColor))
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.primary.opacity(0.05))
+                            )
                         }
                     }
                 }

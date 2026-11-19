@@ -30,11 +30,11 @@ final class NativeAuthCoordinator {
             error: &bioError
         )
         let hasQuickPin = await vault.isQuickPinConfigured()
+        let settings = await vault.getSettings()
+        let l10n = L10n(settings.language)
 
-        // In closed clamshell mode (Touch ID unavailable), prefer Quick PIN HUD if configured,
-        // with one-click fallback to macOS System Authentication.
         if !touchIDReady && hasQuickPin {
-            let hudOutcome = await presentQuickPinHUD(request: request)
+            let hudOutcome = await presentQuickPinHUD(request: request, l10n: l10n)
             switch hudOutcome {
             case .approved:
                 return true
@@ -50,9 +50,11 @@ final class NativeAuthCoordinator {
 
     func evaluateSystemOwnerAuth(reason: String) async -> Bool {
         NSApp.activate(ignoringOtherApps: true)
+        let settings = await vault.getSettings()
+        let l10n = L10n(settings.language)
 
         let context = LAContext()
-        context.localizedCancelTitle = "Отклонить"
+        context.localizedCancelTitle = l10n.denyButton
 
         var policyError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &policyError) else {
@@ -74,12 +76,12 @@ final class NativeAuthCoordinator {
         case fallbackToSystemAuth
     }
 
-    private func presentQuickPinHUD(request: AuthChallengeRequest) async -> PinHUDOutcome {
+    private func presentQuickPinHUD(request: AuthChallengeRequest, l10n: L10n) async -> PinHUDOutcome {
         NSApp.activate(ignoringOtherApps: true)
 
         return await withCheckedContinuation { continuation in
             let panel = KeyableFloatingPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 360, height: 230),
+                contentRect: NSRect(x: 0, y: 0, width: 350, height: 220),
                 styleMask: [.titled, .fullSizeContentView],
                 backing: .buffered,
                 defer: false
@@ -106,6 +108,7 @@ final class NativeAuthCoordinator {
             let rootView = QuickPinHUDView(
                 request: request,
                 vault: vault,
+                l10n: l10n,
                 onApproved: { finish(.approved) },
                 onDenied: { finish(.denied) },
                 onSystemFallback: { finish(.fallbackToSystemAuth) }
@@ -126,6 +129,7 @@ private final class KeyableFloatingPanel: NSPanel {
 private struct QuickPinHUDView: View {
     let request: AuthChallengeRequest
     let vault: VaultStore
+    let l10n: L10n
     let onApproved: @MainActor () -> Void
     let onDenied: @MainActor () -> Void
     let onSystemFallback: @MainActor () -> Void
@@ -138,11 +142,11 @@ private struct QuickPinHUDView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: request.channel == .mcp ? "cpu.fill" : "lock.shield.fill")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(request.channel == .mcp ? Color.orange : Color.accentColor)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(request.channel == .mcp ? "Подтверждение запроса MCP" : "Разблокировка MacOTP")
+                    Text(request.channel == .mcp ? l10n.mcpConfirmHeader : l10n.unlockHeader)
                         .font(.headline)
                     if let service = request.serviceLabel {
                         Text(service)
@@ -160,7 +164,7 @@ private struct QuickPinHUDView: View {
             }
 
             LocalMaskedField(
-                placeholder: "Введите быстрый PIN",
+                placeholder: l10n.enterQuickPinHUD,
                 text: $pin,
                 autoFocus: true,
                 onSubmit: { submitPin() },
@@ -174,14 +178,14 @@ private struct QuickPinHUDView: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
             } else {
-                Text("Touch ID недоступен (крышка закрыта). Введите PIN или используйте пароль macOS.")
+                Text(l10n.clamshellHintHUD)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
 
             HStack {
-                Button("Пароль macOS") {
+                Button(l10n.macOSPasswordButton) {
                     onSystemFallback()
                 }
                 .buttonStyle(.link)
@@ -189,12 +193,12 @@ private struct QuickPinHUDView: View {
 
                 Spacer()
 
-                Button("Отклонить") {
+                Button(l10n.denyButton) {
                     onDenied()
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("Подтвердить") {
+                Button(l10n.confirmButton) {
                     submitPin()
                 }
                 .buttonStyle(.borderedProminent)
@@ -202,8 +206,8 @@ private struct QuickPinHUDView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 360)
+        .padding(18)
+        .frame(width: 350)
     }
 
     private func submitPin() {

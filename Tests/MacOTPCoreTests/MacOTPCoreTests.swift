@@ -265,6 +265,14 @@ struct VerificationSuite {
             try expectEqual(await gate.getCount(), countBeforeCooldownCall, "Cooldown must short-circuit before Touch ID prompt")
         }
 
+        await run("7. Multi-language localization (English, Russian, Uzbek, French + System Auto)") {
+            try expectEqual(L10n(.en).unlockButton, "Unlock")
+            try expectEqual(L10n(.ru).unlockButton, "Разблокировать")
+            try expectEqual(L10n(.uz).unlockButton, "Qulfni ochish")
+            try expectEqual(L10n(.fr).unlockButton, "Déverrouiller")
+            try expect(!L10n(.system).unlockButton.isEmpty, "System locale must resolve cleanly")
+        }
+
         print("=== Summary: \(passed) passed, \(failed) failed ===")
         if failed > 0 {
             Foundation.exit(1)
