@@ -40,7 +40,7 @@ final class MacOTPAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegat
 
             popover.behavior = .transient
             popover.animates = true
-            popover.contentSize = NSSize(width: 390, height: 520)
+            popover.contentSize = NSSize(width: 350, height: 330)
             popover.delegate = self
 
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

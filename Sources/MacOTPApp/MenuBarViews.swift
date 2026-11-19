@@ -2,26 +2,36 @@ import AppKit
 import MacOTPCore
 import SwiftUI
 
-enum PopoverTab: String, CaseIterable {
-    case codes = "Коды"
-    case audit = "Журнал"
-    case settings = "Защита и MCP"
+private enum ActiveModalSheet: Identifiable {
+    case addAccount
+    case settings
+    case audit
+
+    var id: Int {
+        switch self {
+        case .addAccount: return 1
+        case .settings: return 2
+        case .audit: return 3
+        }
+    }
 }
 
 struct MenuBarRootView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var selectedTab: PopoverTab = .codes
-    @State private var showingAddSheet: Bool = false
+    @State private var activeSheet: ActiveModalSheet?
+    @State private var isEnteringPin: Bool = false
+    @State private var inlinePin: String = ""
+    @State private var pendingCopyAccount: OTPAccountMetadata?
 
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-            Divider()
 
             if let errorBanner = viewModel.errorBanner {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
+                        .font(.caption)
                     Text(errorBanner)
                         .font(.caption)
                         .lineLimit(2)
@@ -34,29 +44,23 @@ struct MenuBarRootView: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 6)
                 .background(Color.orange.opacity(0.12))
-                Divider()
             }
 
-            Group {
-                switch selectedTab {
-                case .codes:
-                    AccountsTabView(
-                        viewModel: viewModel,
-                        onAddTapped: { showingAddSheet = true }
-                    )
-                case .audit:
-                    AuditTabView(entries: viewModel.auditEntries)
-                case .settings:
-                    SettingsTabView(viewModel: viewModel)
+            AccountsListView(
+                viewModel: viewModel,
+                onAccountClicked: { account in
+                    handleAccountClick(account)
+                },
+                onAddTapped: {
+                    activeSheet = .addAccount
                 }
-            }
+            )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if let toast = viewModel.toastMessage {
-                Divider()
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
@@ -64,209 +68,329 @@ struct MenuBarRootView: View {
                         .font(.caption.weight(.medium))
                     Spacer()
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 6)
-                .background(Color.green.opacity(0.10))
+                .background(Color.green.opacity(0.12))
             }
 
             Divider()
-            footerBar
+                .opacity(0.5)
+
+            bottomActionBar
         }
-        .frame(width: 390, height: 520)
-        .sheet(isPresented: $showingAddSheet) {
-            AddAccountSheetView(viewModel: viewModel, isPresented: $showingAddSheet)
+        .frame(width: 350, height: 330)
+        .onChange(of: viewModel.isUnlocked) { _, unlocked in
+            if unlocked {
+                isEnteringPin = false
+                inlinePin = ""
+            }
+        }
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .addAccount:
+                AddAccountSheetView(
+                    viewModel: viewModel,
+                    onClose: { activeSheet = nil }
+                )
+            case .settings:
+                SettingsSheetView(
+                    viewModel: viewModel,
+                    onClose: { activeSheet = nil }
+                )
+            case .audit:
+                AuditSheetView(
+                    entries: viewModel.auditEntries,
+                    onClose: { activeSheet = nil }
+                )
+            }
         }
     }
 
+    // MARK: - Header
+
     private var headerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: viewModel.isUnlocked ? "checkmark.shield.fill" : "lock.shield.fill")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(viewModel.isUnlocked ? .green : .secondary)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text("MacOTP")
-                    .font(.system(size: 13, weight: .bold))
-                Text(statusSubtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            Text("MacOTP")
+                .font(.system(size: 13, weight: .bold))
+
+            Text(statusSubtitle)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(viewModel.isUnlocked ? .green : .secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule()
+                        .fill(viewModel.isUnlocked ? Color.green.opacity(0.12) : Color.secondary.opacity(0.10))
+                )
 
             Spacer()
 
-            Picker("", selection: $selectedTab) {
-                ForEach(PopoverTab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
+            Menu {
+                Button {
+                    activeSheet = .settings
+                } label: {
+                    Label("Настройки и защита...", systemImage: "slider.horizontal.3")
                 }
+
+                Button {
+                    viewModel.copyMCPConfigSnippet()
+                } label: {
+                    Label("Скопировать конфиг MCP", systemImage: "cpu")
+                }
+
+                Button {
+                    activeSheet = .audit
+                } label: {
+                    Label("Журнал событий...", systemImage: "list.bullet.rectangle")
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    viewModel.shutdown()
+                    NSApp.terminate(nil)
+                } label: {
+                    Label("Выйти из MacOTP", systemImage: "power")
+                }
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
             }
-            .pickerStyle(.segmented)
-            .frame(width: 225)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Настройки и дополнительно")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.top, 11)
+        .padding(.bottom, 6)
     }
 
     private var statusSubtitle: String {
         if viewModel.isUnlocked {
             let mins = viewModel.remainingUnlockSeconds / 60
             let secs = viewModel.remainingUnlockSeconds % 60
-            return String(format: "Открыто · %02d:%02d", mins, secs)
+            return String(format: "%02d:%02d", mins, secs)
         }
         return "Заблокировано"
     }
 
-    private var footerBar: some View {
-        HStack {
-            if viewModel.isUnlocked {
-                Button {
-                    Task { await viewModel.lockVault() }
-                } label: {
-                    Label("Заблокировать", systemImage: "lock.fill")
-                        .font(.caption)
+    // MARK: - State-Changing Bottom Primary Bar
+
+    @ViewBuilder
+    private var bottomActionBar: some View {
+        if viewModel.isUnlocked {
+            Button {
+                Task { await viewModel.lockVault() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                    Text("Заблокировать")
+                        .fontWeight(.medium)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            } else {
-                Button {
-                    Task { await viewModel.unlockWithSystemAuth() }
-                } label: {
-                    Label("Touch ID / Пароль", systemImage: "touchid")
-                        .font(.caption)
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+        } else if isEnteringPin {
+            HStack(spacing: 6) {
+                LocalMaskedField(
+                    placeholder: "Введите PIN + Enter",
+                    text: $inlinePin,
+                    autoFocus: true,
+                    onSubmit: { submitInlinePin() },
+                    onCancel: {
+                        isEnteringPin = false
+                        inlinePin = ""
+                        pendingCopyAccount = nil
+                    }
+                )
+                .frame(height: 26)
+
+                Button("Открыть") {
+                    submitInlinePin()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .disabled(inlinePin.isEmpty)
+
+                Button {
+                    isEnteringPin = false
+                    inlinePin = ""
+                    let target = pendingCopyAccount
+                    pendingCopyAccount = nil
+                    Task {
+                        if let target {
+                            await viewModel.copyCode(for: target)
+                        } else {
+                            await viewModel.unlockWithSystemAuth()
+                        }
+                    }
+                } label: {
+                    Image(systemName: "touchid")
+                        .font(.system(size: 13))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("Использовать системный пароль / Touch ID")
+
+                Button {
+                    isEnteringPin = false
+                    inlinePin = ""
+                    pendingCopyAccount = nil
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Отмена")
             }
-
-            Spacer()
-
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+        } else {
             Button {
-                showingAddSheet = true
+                triggerUnlockFlow(afterUnlockCopy: nil)
             } label: {
-                Label("Добавить 2FA", systemImage: "plus")
-                    .font(.caption)
+                HStack(spacing: 6) {
+                    Image(systemName: viewModel.isTouchIDCurrentlyAvailable() ? "touchid" : "lock.open.fill")
+                    Text("Разблокировать")
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-
-            Button {
-                viewModel.shutdown()
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.caption)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Завершить работу MacOTP")
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+    }
+
+    private func handleAccountClick(_ account: OTPAccountMetadata) {
+        if viewModel.isUnlocked {
+            Task { await viewModel.copyCode(for: account) }
+        } else {
+            triggerUnlockFlow(afterUnlockCopy: account)
+        }
+    }
+
+    private func triggerUnlockFlow(afterUnlockCopy account: OTPAccountMetadata?) {
+        if !viewModel.isTouchIDCurrentlyAvailable() && viewModel.isQuickPinSet {
+            pendingCopyAccount = account
+            inlinePin = ""
+            isEnteringPin = true
+        } else {
+            Task {
+                if let account {
+                    await viewModel.copyCode(for: account)
+                } else {
+                    await viewModel.unlockWithSystemAuth()
+                }
+            }
+        }
+    }
+
+    private func submitInlinePin() {
+        let entered = inlinePin
+        guard !entered.isEmpty else { return }
+        inlinePin = ""
+        let target = pendingCopyAccount
+        Task {
+            let ok = await viewModel.unlockWithQuickPin(entered)
+            if ok {
+                isEnteringPin = false
+                pendingCopyAccount = nil
+                if let target {
+                    await viewModel.copyCode(for: target)
+                }
+            }
+        }
     }
 }
 
-// MARK: - Accounts Tab
+// MARK: - Accounts List with Integrated Plus Button
 
-private struct AccountsTabView: View {
+private struct AccountsListView: View {
     @ObservedObject var viewModel: AppViewModel
+    let onAccountClicked: (OTPAccountMetadata) -> Void
     let onAddTapped: () -> Void
-    @State private var inlinePin: String = ""
 
     var body: some View {
         VStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
-                TextField("Поиск сервиса или логина...", text: $viewModel.searchQuery)
-                    .textFieldStyle(.plain)
-                if !viewModel.searchQuery.isEmpty {
-                    Button {
-                        viewModel.searchQuery = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
+            if viewModel.accounts.count > 1 || !viewModel.searchQuery.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    TextField("Поиск...", text: $viewModel.searchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                    if !viewModel.searchQuery.isEmpty {
+                        Button {
+                            viewModel.searchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                                .font(.system(size: 12))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 14)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 7) {
+                    ForEach(viewModel.filteredAccounts) { account in
+                        AccountRowCard(
+                            account: account,
+                            generated: viewModel.liveCodes[account.id],
+                            isUnlocked: viewModel.isUnlocked,
+                            onCopy: { onAccountClicked(account) },
+                            onDelete: {
+                                Task { await viewModel.deleteAccount(account) }
+                            }
+                        )
+                    }
+
+                    // Clean inline '+' card directly inside the list
+                    Button(action: onAddTapped) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 12, weight: .semibold))
+                            if viewModel.accounts.isEmpty {
+                                Text("Добавить первый аккаунт")
+                                    .font(.system(size: 12, weight: .medium))
+                            }
+                        }
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 9)
+                                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                .foregroundStyle(Color.secondary.opacity(0.28))
+                        )
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help("Добавить новый аккаунт")
                 }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 12)
-            .padding(.top, 10)
-
-            if !viewModel.isUnlocked && viewModel.isQuickPinSet {
-                HStack(spacing: 8) {
-                    Image(systemName: "key.fill")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                    LocalMaskedField(
-                        placeholder: "Быстрый PIN + Enter",
-                        text: $inlinePin,
-                        onSubmit: {
-                            let entered = inlinePin
-                            inlinePin = ""
-                            Task { _ = await viewModel.unlockWithQuickPin(entered) }
-                        }
-                    )
-                    .frame(height: 24)
-                    Button("Открыть") {
-                        let entered = inlinePin
-                        inlinePin = ""
-                        Task { _ = await viewModel.unlockWithQuickPin(entered) }
-                    }
-                    .controlSize(.small)
-                    .disabled(inlinePin.isEmpty)
-                }
-                .padding(.horizontal, 12)
-            }
-
-            if viewModel.accounts.isEmpty {
-                Spacer()
-                VStack(spacing: 10) {
-                    Image(systemName: "qrcode.viewfinder")
-                        .font(.system(size: 34))
-                        .foregroundStyle(.secondary)
-                    Text("Нет добавленных 2FA-аккаунтов")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Считайте QR-код прямо с экрана, вставьте ссылку otpauth:// или секретный ключ.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 28)
-                    Button("Добавить первый аккаунт") {
-                        onAddTapped()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                }
-                Spacer()
-            } else if viewModel.filteredAccounts.isEmpty {
-                Spacer()
-                Text("Ничего не найдено по запросу «\(viewModel.searchQuery)»")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(viewModel.filteredAccounts) { account in
-                            AccountRowCard(
-                                account: account,
-                                generated: viewModel.liveCodes[account.id],
-                                isUnlocked: viewModel.isUnlocked,
-                                onCopy: {
-                                    Task { await viewModel.copyCode(for: account) }
-                                },
-                                onDelete: {
-                                    Task { await viewModel.deleteAccount(account) }
-                                }
-                            )
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 10)
-                }
+                .padding(.horizontal, 14)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
             }
         }
     }
@@ -299,31 +423,35 @@ private struct AccountRowCard: View {
 
                 if isUnlocked, let generated {
                     Text(generated.formattedCode)
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .font(.system(size: 17, weight: .bold, design: .monospaced))
                         .foregroundStyle(generated.remainingSeconds <= 5 ? Color.orange : Color.accentColor)
 
                     CountdownRing(
                         remaining: generated.remainingSeconds,
                         period: generated.period
                     )
-                    .frame(width: 24, height: 24)
+                    .frame(width: 22, height: 22)
                 } else {
                     Text("••• •••")
-                        .font(.system(size: 16, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary.opacity(0.75))
                     Image(systemName: "doc.on.doc")
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
             .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isUnlocked ? "Нажмите, чтобы скопировать код" : "Нажмите для разблокировки и копирования кода")
+        .help(isUnlocked ? "Скопировать код" : "Разблокировать и скопировать код")
         .contextMenu {
             Button("Скопировать код") { onCopy() }
             Button("Скопировать ID для MCP") {
@@ -345,16 +473,16 @@ private struct CountdownRing: View {
         let urgent = remaining <= 5
         ZStack {
             Circle()
-                .stroke(Color.secondary.opacity(0.2), lineWidth: 2.5)
+                .stroke(Color.secondary.opacity(0.2), lineWidth: 2.2)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
                     urgent ? Color.orange : Color.accentColor,
-                    style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
             Text("\(remaining)")
-                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(urgent ? .orange : .secondary)
         }
     }
@@ -364,9 +492,9 @@ private struct CountdownRing: View {
 
 private struct AddAccountSheetView: View {
     @ObservedObject var viewModel: AppViewModel
-    @Binding var isPresented: Bool
+    let onClose: () -> Void
 
-    @State private var mode: Int = 0 // 0 = QR / URI, 1 = Manual
+    @State private var mode: Int = 0
     @State private var uriText: String = ""
     @State private var issuer: String = ""
     @State private var accountName: String = ""
@@ -376,8 +504,8 @@ private struct AddAccountSheetView: View {
     @State private var algorithm: OTPAlgorithm = .sha1
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Добавление 2FA-аккаунта")
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Новый аккаунт")
                 .font(.headline)
 
             Picker("", selection: $mode) {
@@ -388,15 +516,11 @@ private struct AddAccountSheetView: View {
 
             if mode == 0 {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Быстрый импорт QR-кода (включая экспорт из Google Authenticator):")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
                     HStack(spacing: 8) {
                         Button {
                             Task {
                                 if await viewModel.scanQRFromScreen() {
-                                    isPresented = false
+                                    onClose()
                                 }
                             }
                         } label: {
@@ -406,7 +530,7 @@ private struct AddAccountSheetView: View {
                         Button {
                             Task {
                                 if await viewModel.scanQRFromClipboard() {
-                                    isPresented = false
+                                    onClose()
                                 }
                             }
                         } label: {
@@ -416,45 +540,39 @@ private struct AddAccountSheetView: View {
                         Button {
                             Task {
                                 if await viewModel.scanQRFromFilePicker() {
-                                    isPresented = false
+                                    onClose()
                                 }
                             }
                         } label: {
-                            Label("Из файла...", systemImage: "photo")
+                            Label("Файл...", systemImage: "photo")
                         }
                     }
                     .controlSize(.small)
 
-                    Divider()
-
-                    Text("Или вставьте ссылку `otpauth://` / `otpauth-migration://`:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    TextField("otpauth://totp/GitHub:user?secret=...", text: $uriText)
+                    TextField("otpauth://totp/...", text: $uriText)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.caption, design: .monospaced))
                 }
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextField("Сервис (например: GitHub, AWS, Google)", text: $issuer)
+                    TextField("Сервис (GitHub, VPN, AWS)", text: $issuer)
                         .textFieldStyle(.roundedBorder)
-                    TextField("Логин / Email (необязательно)", text: $accountName)
+                    TextField("Логин / Email", text: $accountName)
                         .textFieldStyle(.roundedBorder)
-                    TextField("Секретный ключ Base32 (JBSWY3DPEHPK3PXP)", text: $secretBase32)
+                    TextField("Секретный ключ Base32", text: $secretBase32)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
+                        .font(.system(.caption, design: .monospaced))
 
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Picker("Цифр", selection: $digits) {
                             Text("6").tag(6)
                             Text("8").tag(8)
                         }
-                        Picker("Интервал", selection: $period) {
-                            Text("30 сек").tag(30)
-                            Text("60 сек").tag(60)
+                        Picker("Шаг", selection: $period) {
+                            Text("30с").tag(30)
+                            Text("60с").tag(60)
                         }
-                        Picker("Алгоритм", selection: $algorithm) {
+                        Picker("", selection: $algorithm) {
                             ForEach(OTPAlgorithm.allCases, id: \.self) { algo in
                                 Text(algo.rawValue).tag(algo)
                             }
@@ -475,7 +593,7 @@ private struct AddAccountSheetView: View {
                 Spacer()
                 Button("Отмена") {
                     viewModel.errorBanner = nil
-                    isPresented = false
+                    onClose()
                 }
                 .keyboardShortcut(.cancelAction)
 
@@ -483,7 +601,7 @@ private struct AddAccountSheetView: View {
                     Task {
                         if mode == 0 {
                             if await viewModel.importFromURI(uriText) {
-                                isPresented = false
+                                onClose()
                             }
                         } else {
                             if await viewModel.addManualAccount(
@@ -494,7 +612,7 @@ private struct AddAccountSheetView: View {
                                 period: period,
                                 algorithm: algorithm
                             ) {
-                                isPresented = false
+                                onClose()
                             }
                         }
                     }
@@ -504,184 +622,107 @@ private struct AddAccountSheetView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(18)
-        .frame(width: 370)
+        .padding(16)
+        .frame(width: 320)
     }
 }
 
-// MARK: - Audit Tab
+// MARK: - Settings Modal Sheet (Opened via Gear Menu)
 
-private struct AuditTabView: View {
-    let entries: [AuditEntry]
-    private static let formatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss dd.MM"
-        return f
-    }()
-
-    var body: some View {
-        if entries.isEmpty {
-            VStack(spacing: 8) {
-                Spacer()
-                Image(systemName: "list.bullet.rectangle")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.secondary)
-                Text("Журнал событий пуст")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-        } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(entries) { item in
-                        HStack(alignment: .top, spacing: 8) {
-                            Circle()
-                                .fill(badgeColor(for: item.outcome))
-                                .frame(width: 7, height: 7)
-                                .padding(.top, 5)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text("[\(item.channel.rawValue)] \(item.target)")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .lineLimit(1)
-                                    Spacer()
-                                    Text(Self.formatter.string(from: item.timestamp))
-                                        .font(.system(size: 10, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text("\(item.action) · \(item.detail.isEmpty ? item.outcome.rawValue : item.detail)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(8)
-                        .background(Color(nsColor: .controlBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                }
-                .padding(12)
-            }
-        }
-    }
-
-    private func badgeColor(for outcome: AuditOutcome) -> Color {
-        switch outcome {
-        case .granted: return .green
-        case .denied: return .red
-        case .rateLimited: return .orange
-        case .error: return .red
-        case .info: return .blue
-        }
-    }
-}
-
-// MARK: - Settings & MCP Tab
-
-private struct SettingsTabView: View {
+private struct SettingsSheetView: View {
     @ObservedObject var viewModel: AppViewModel
+    let onClose: () -> Void
     @State private var newPin: String = ""
     @State private var backupPassword: String = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 8) {
-                    Image(systemName: "cpu.fill")
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Изоляция ключей: \(viewModel.keyBackendLabel)")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text("Zero-Keychain режим: общая связка ключей macOS не затрагивается")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Настройки и защита")
+                    .font(.headline)
+                Spacer()
+                Button("Готово") {
+                    onClose()
                 }
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.green.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .keyboardShortcut(.defaultAction)
+            }
 
-                GroupBox("Сессия и политика MCP") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("Таймер разблокировки UI:", selection: Binding(
-                            get: { viewModel.settings.uiSessionTTLSeconds },
-                            set: { val in
-                                var s = viewModel.settings
-                                s.uiSessionTTLSeconds = val
-                                Task { await viewModel.saveSettings(s) }
-                            }
-                        )) {
-                            Text("Одноразово (0 сек)").tag(0)
-                            Text("1 минута").tag(60)
-                            Text("5 минут").tag(300)
-                            Text("15 минут").tag(900)
-                        }
-                        .controlSize(.small)
-
-                        Picker("Запросы от MCP:", selection: Binding(
-                            get: { viewModel.settings.mcpAuthPolicy },
-                            set: { val in
-                                var s = viewModel.settings
-                                s.mcpAuthPolicy = val
-                                Task { await viewModel.saveSettings(s) }
-                            }
-                        )) {
-                            Text("Подтверждать каждый код").tag(MCPAuthPolicy.alwaysAskPerRequest)
-                            Text("Использовать открытую сессию").tag(MCPAuthPolicy.reuseActiveSession)
-                        }
-                        .controlSize(.small)
-
-                        Toggle("Разрешать список сервисов через MCP без разблокировки", isOn: Binding(
-                            get: { viewModel.settings.allowMCPListWhenLocked },
-                            set: { val in
-                                var s = viewModel.settings
-                                s.allowMCPListWhenLocked = val
-                                Task { await viewModel.saveSettings(s) }
-                            }
-                        ))
-                        .font(.caption)
-
-                        Toggle("Блокировать при сне / блокировке экрана Mac", isOn: Binding(
-                            get: { viewModel.settings.autoLockOnSleepOrScreenLock },
-                            set: { val in
-                                var s = viewModel.settings
-                                s.autoLockOnSleepOrScreenLock = val
-                                Task { await viewModel.saveSettings(s) }
-                            }
-                        ))
-                        .font(.caption)
-
-                        Toggle("Очищать скопированный код из буфера через 30 сек", isOn: Binding(
-                            get: { viewModel.settings.autoClearClipboard },
-                            set: { val in
-                                var s = viewModel.settings
-                                s.autoClearClipboard = val
-                                Task { await viewModel.saveSettings(s) }
-                            }
-                        ))
-                        .font(.caption)
-                    }
-                    .padding(6)
-                }
-
-                GroupBox("Быстрый PIN (удобно при закрытой крышке MacBook)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(viewModel.isQuickPinSet
-                             ? "Быстрый PIN активен (защита от перебора: сброс после 5 ошибок)."
-                             : "Позволяет подтверждать выдачу кодов коротким PIN, когда Touch ID недоступен.")
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "cpu.fill")
+                            .foregroundStyle(.green)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text("Ключи: \(viewModel.keyBackendLabel) (Zero-Keychain)")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .padding(7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.green.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
 
-                        HStack(spacing: 8) {
+                    GroupBox("Сессия и MCP") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Picker("Сессия UI:", selection: Binding(
+                                get: { viewModel.settings.uiSessionTTLSeconds },
+                                set: { val in
+                                    var s = viewModel.settings
+                                    s.uiSessionTTLSeconds = val
+                                    Task { await viewModel.saveSettings(s) }
+                                }
+                            )) {
+                                Text("Одноразово (0с)").tag(0)
+                                Text("1 мин").tag(60)
+                                Text("5 мин").tag(300)
+                                Text("15 мин").tag(900)
+                            }
+                            .controlSize(.small)
+
+                            Picker("Режим MCP:", selection: Binding(
+                                get: { viewModel.settings.mcpAuthPolicy },
+                                set: { val in
+                                    var s = viewModel.settings
+                                    s.mcpAuthPolicy = val
+                                    Task { await viewModel.saveSettings(s) }
+                                }
+                            )) {
+                                Text("Спрашивать каждый раз").tag(MCPAuthPolicy.alwaysAskPerRequest)
+                                Text("Общая сессия с UI").tag(MCPAuthPolicy.reuseActiveSession)
+                            }
+                            .controlSize(.small)
+
+                            Toggle("Блокировать при сне Mac", isOn: Binding(
+                                get: { viewModel.settings.autoLockOnSleepOrScreenLock },
+                                set: { val in
+                                    var s = viewModel.settings
+                                    s.autoLockOnSleepOrScreenLock = val
+                                    Task { await viewModel.saveSettings(s) }
+                                }
+                            ))
+                            .font(.caption)
+
+                            Toggle("Очищать буфер через 30 сек", isOn: Binding(
+                                get: { viewModel.settings.autoClearClipboard },
+                                set: { val in
+                                    var s = viewModel.settings
+                                    s.autoClearClipboard = val
+                                    Task { await viewModel.saveSettings(s) }
+                                }
+                            ))
+                            .font(.caption)
+                        }
+                        .padding(4)
+                    }
+
+                    GroupBox("Быстрый PIN (при закрытой крышке)") {
+                        HStack(spacing: 6) {
                             LocalMaskedField(
-                                placeholder: "Новый PIN (4–12 симв.)",
+                                placeholder: viewModel.isQuickPinSet ? "Сменить PIN" : "Новый PIN (4–12)",
                                 text: $newPin
                             )
                             .frame(height: 24)
 
-                            Button(viewModel.isQuickPinSet ? "Сменить" : "Задать") {
+                            Button(viewModel.isQuickPinSet ? "Обновить" : "Задать") {
                                 let pinToSet = newPin
                                 newPin = ""
                                 Task { _ = await viewModel.setupQuickPin(pinToSet) }
@@ -690,54 +731,31 @@ private struct SettingsTabView: View {
                             .disabled(newPin.count < 4)
 
                             if viewModel.isQuickPinSet {
-                                Button("Отключить", role: .destructive) {
+                                Button("Сброс", role: .destructive) {
                                     Task { await viewModel.removeQuickPin() }
                                 }
                                 .controlSize(.small)
                             }
                         }
+                        .padding(4)
                     }
-                    .padding(6)
-                }
 
-                GroupBox("Подключение к MCP (Antigravity / Claude / Cursor)") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Бинарный мост MCP:")
-                            .font(.caption.weight(.semibold))
-                        Text(viewModel.resolvedMCPBinaryPath())
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
+                    GroupBox("Резервная копия (AES-256-GCM)") {
+                        HStack(spacing: 6) {
+                            LocalMaskedField(
+                                placeholder: "Пароль (мин. 6 симв.)",
+                                text: $backupPassword
+                            )
+                            .frame(height: 24)
 
-                        Button {
-                            viewModel.copyMCPConfigSnippet()
-                        } label: {
-                            Label("Скопировать JSON для mcp_config.json", systemImage: "doc.on.doc")
-                                .font(.caption)
-                        }
-                        .controlSize(.small)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                }
-
-                GroupBox("Зашифрованный бэкап (AES-256-GCM)") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        LocalMaskedField(
-                            placeholder: "Мастер-пароль бэкапа (мин. 6 симв.)",
-                            text: $backupPassword
-                        )
-                        .frame(height: 24)
-
-                        HStack(spacing: 8) {
-                            Button("Экспорт...") {
+                            Button("Экспорт") {
                                 let pwd = backupPassword
                                 backupPassword = ""
                                 Task { _ = await viewModel.exportBackupInteractive(password: pwd) }
                             }
                             .disabled(backupPassword.count < 6)
 
-                            Button("Импорт...") {
+                            Button("Импорт") {
                                 let pwd = backupPassword
                                 backupPassword = ""
                                 Task { _ = await viewModel.importBackupInteractive(password: pwd) }
@@ -745,11 +763,81 @@ private struct SettingsTabView: View {
                             .disabled(backupPassword.count < 6)
                         }
                         .controlSize(.small)
+                        .padding(4)
                     }
-                    .padding(6)
                 }
             }
-            .padding(12)
         }
+        .padding(14)
+        .frame(width: 325, height: 295)
+    }
+}
+
+// MARK: - Audit Modal Sheet (Opened via Gear Menu)
+
+private struct AuditSheetView: View {
+    let entries: [AuditEntry]
+    let onClose: () -> Void
+
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss dd.MM"
+        return f
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Журнал событий")
+                    .font(.headline)
+                Spacer()
+                Button("Закрыть") {
+                    onClose()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+
+            if entries.isEmpty {
+                Spacer()
+                Text("Событий пока нет")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 5) {
+                        ForEach(entries) { item in
+                            HStack(alignment: .top, spacing: 6) {
+                                Circle()
+                                    .fill(item.outcome == .granted ? Color.green : (item.outcome == .denied ? Color.red : Color.blue))
+                                    .frame(width: 6, height: 6)
+                                    .padding(.top, 4)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    HStack {
+                                        Text("[\(item.channel.rawValue)] \(item.target)")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .lineLimit(1)
+                                        Spacer()
+                                        Text(Self.formatter.string(from: item.timestamp))
+                                            .font(.system(size: 9.5, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text("\(item.action) · \(item.detail.isEmpty ? item.outcome.rawValue : item.detail)")
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(6)
+                            .background(Color(nsColor: .controlBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 325, height: 280)
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import LocalAuthentication
 import MacOTPCore
 import UniformTypeIdentifiers
 
@@ -234,6 +235,12 @@ final class AppViewModel: ObservableObject {
     }
 
     // MARK: - Unlock / Lock / Copy
+
+    func isTouchIDCurrentlyAvailable() -> Bool {
+        let ctx = LAContext()
+        var err: NSError?
+        return ctx.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &err)
+    }
 
     func unlockWithSystemAuth() async {
         errorBanner = nil
